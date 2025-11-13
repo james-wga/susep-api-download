@@ -11,15 +11,6 @@ const CONFIG = {
   navigationTimeout: 90000
 };
 
-// Helper para converter stream em Buffer
-async function streamToBuffer(readable) {
-  const chunks = [];
-  for await (const chunk of readable) {
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks);
-}
-
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -71,11 +62,11 @@ app.get('/', (req, res) => {
     <body>
       <div class="container">
         <h1>✅ API SUSEP Download</h1>
-        <span class="badge">v14.0 - Download Event</span>
+        <span class="badge">v14.1 - Direct Navigation</span>
         
         <div class="success">
-          <strong>✓ Estratégia de Evento de Download</strong><br>
-          Captura o download através do evento nativo do Puppeteer
+          <strong>✓ Método Simplificado</strong><br>
+          Navega diretamente para a URL do PDF mantendo a sessão
         </div>
 
         <h3>📡 Endpoint</h3>
@@ -244,45 +235,31 @@ app.post('/download-susep', async (req, res) => {
     const arquivoParaBaixar = arquivos[arquivoIndex];
     console.log(`\n📎 Selecionado: [${arquivoParaBaixar.index}] ${arquivoParaBaixar.nome}`);
 
-    console.log('\n⬇️ Preparando captura de download...');
+    console.log('\n⬇️ Navegando diretamente para o PDF na mesma página...');
 
-    // Configurar comportamento de download
-    const client = await page.target().createCDPSession();
-    await client.send('Browser.setDownloadBehavior', {
-      behavior: 'allow',
-      downloadPath: '/tmp'
+    // Construir URL completa
+    const downloadUrl = `https://www2.susep.gov.br${arquivoParaBaixar.path}`;
+    console.log(`🔗 URL: ${downloadUrl}`);
+
+    console.log('🌐 Acessando PDF...');
+    const pdfResponse = await page.goto(downloadUrl, {
+      waitUntil: 'networkidle0',
+      timeout: CONFIG.navigationTimeout
     });
 
-    console.log('🖱️ Clicando no link...');
+    if (!pdfResponse) {
+      throw new Error('Sem resposta ao acessar PDF');
+    }
 
-    // Aguardar evento de download e clicar
-    const [download] = await Promise.all([
-      page.waitForEvent('download', { timeout: CONFIG.navigationTimeout }),
-      page.evaluate((downloadId) => {
-        const links = [
-          ...Array.from(document.querySelectorAll('a.linkDownloadRelatorio')),
-          ...Array.from(document.querySelectorAll('a[onclick*="Download"]'))
-        ];
+    const status = pdfResponse.status();
+    console.log(`📡 Status: ${status}`);
 
-        const target = links.find((link) => {
-          const onclick = link.getAttribute('onclick') || '';
-          return onclick.includes(downloadId);
-        });
+    if (status !== 200) {
+      throw new Error(`Erro HTTP ${status}`);
+    }
 
-        if (target) {
-          target.click();
-        } else {
-          throw new Error('Link não encontrado');
-        }
-      }, arquivoParaBaixar.downloadId)
-    ]);
-
-    const suggestedName = download.suggestedFilename();
-    console.log(`✅ Download iniciado: ${suggestedName}`);
-
-    console.log('📦 Lendo stream...');
-    const stream = await download.createReadStream();
-    const pdfBuffer = await streamToBuffer(stream);
+    console.log('📦 Capturando buffer...');
+    const pdfBuffer = await pdfResponse.buffer();
 
     console.log(`✓ Buffer capturado: ${pdfBuffer.length} bytes`);
 
@@ -308,7 +285,7 @@ app.post('/download-susep', async (req, res) => {
 
     await browser.close();
 
-    const filename = (suggestedName || arquivoParaBaixar.nome).replace(/[^\w\.-]/g, '_');
+    const filename = arquivoParaBaixar.nome.replace(/[^\w\.-]/g, '_');
 
     res.set({
       'Content-Type': 'application/pdf',
