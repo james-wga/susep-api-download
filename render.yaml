@@ -2,7 +2,7 @@ services:
   - type: web
     name: susep-api
     runtime: docker
-    repo: https://github.com/SEU_USUARIO/susep-api-download
+    repo: https://github.com/james-wga/susep-api-download
     region: oregon
     plan: free
     branch: main
