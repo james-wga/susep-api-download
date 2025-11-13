@@ -16,7 +16,7 @@ app.get('/', (req, res) => {
     <!DOCTYPE html>
     <html>
     <head>
-      <title>API SUSEP v12</title>
+      <title>API SUSEP v12.3</title>
       <meta charset="utf-8">
       <style>
         body {
@@ -62,12 +62,11 @@ app.get('/', (req, res) => {
     <body>
       <div class="container">
         <h1>✅ API SUSEP Download</h1>
-        <span class="badge">v12.0 - FINAL WORKING!</span>
+        <span class="badge">v12.3 - Response Interception</span>
         
         <div class="success">
-          <strong>✓ Rotas Corrigidas!</strong><br>
-          Consulta: /Produto.aspx/Consultar<br>
-          Download: /Produto.aspx/DownloadConsultaPublica/{ID}
+          <strong>✓ Método: Response Interception</strong><br>
+          Captura o PDF durante o download usando page.on('response')
         </div>
 
         <h3>📡 Endpoint</h3>
@@ -79,7 +78,7 @@ app.get('/', (req, res) => {
 
         <h3>📦 Resposta</h3>
         <p>Retorna o arquivo PDF (por padrão o primeiro disponível)</p>
-        <p>Para escolher qual arquivo: <code>{"numeroprocesso": "...", "indiceArquivo": 2}</code></p>
+        <p>Para escolher: <code>{"numeroprocesso": "...", "indiceArquivo": 2}</code></p>
       </div>
     </body>
     </html>
@@ -89,7 +88,7 @@ app.get('/', (req, res) => {
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
-    version: '12.0',
+    version: '12.3',
     uptime: Math.floor(process.uptime())
   });
 });
@@ -112,7 +111,7 @@ app.post('/download-susep', async (req, res) => {
     }
 
     console.log(`\n${'='.repeat(80)}`);
-    console.log(`📥 DOWNLOAD SUSEP - ${new Date().toISOString()}`);
+    console.log(`📥 DOWNLOAD SUSEP v12.3 - ${new Date().toISOString()}`);
     console.log(`📋 Processo: ${numeroprocesso}`);
     if (indiceArquivo) {
       console.log(`📎 Índice solicitado: ${indiceArquivo}`);
@@ -175,7 +174,7 @@ app.post('/download-susep', async (req, res) => {
     await page.waitForTimeout(3000);
     
     const currentUrl = page.url();
-    console.log(`✅ Resultado carregado: ${currentUrl}`);
+    console.log(`✅ Resultado carregado: ${currentUrl.substring(currentUrl.length - 60)}`);
 
     console.log('\n📄 Buscando arquivos PDF...');
     
@@ -193,8 +192,6 @@ app.post('/download-susep', async (req, res) => {
       uniqueLinks.forEach((link) => {
         const onclick = link.getAttribute('onclick') || '';
         
-        // Extrair o path completo do onclick
-        // Exemplo: location.href='/safe/menumercado/REP2/Produto.aspx/DownloadConsultaPublica/3898'
         let path = '';
         let match = onclick.match(/location\.href\s*=\s*['"]([^'"]+)['"]/);
         if (match) {
@@ -208,14 +205,11 @@ app.post('/download-susep', async (req, res) => {
         
         if (!path) return;
         
-        // Extrair o ID do download
-        // Exemplo: /safe/menumercado/REP2/Produto.aspx/DownloadConsultaPublica/3898
         const idMatch = path.match(/DownloadConsultaPublica\/(\d+)/);
         const downloadId = idMatch ? idMatch[1] : null;
         
         if (!downloadId) return;
         
-        // Extrair nome do arquivo da tabela
         let nomeArquivo = 'documento.pdf';
         const tr = link.closest('tr');
         if (tr) {
@@ -258,63 +252,44 @@ app.post('/download-susep', async (req, res) => {
     const arquivoParaBaixar = arquivos[arquivoIndex];
     console.log(`\n📎 Selecionado: [${arquivoParaBaixar.index}] ${arquivoParaBaixar.nome}`);
 
-    // Construir URL COMPLETA do download
-    const downloadUrl = `https://www2.susep.gov.br/safe/menumercado/REP2/Produto.aspx/DownloadConsultaPublica/${arquivoParaBaixar.downloadId}`;
+    // Baixar o PDF interceptando a response
+    console.log('\n⬇️ Preparando interceptação de download...');
     
-    console.log(`🔗 URL de download: ${downloadUrl}`);
-
-    // Baixar o PDF via CDP (Chrome DevTools Protocol)
-    console.log('\n⬇️ Configurando download via CDP...');
+    // Habilitar interceptação de requests
+    await page.setRequestInterception(true);
     
-    const client = await page.target().createCDPSession();
+    let pdfBuffer = null;
     
-    // Habilitar eventos de download
-    await client.send('Browser.setDownloadBehavior', {
-      behavior: 'allow',
-      downloadPath: '/tmp'
-    });
-    
-    // Configurar interceptação de respostas
-    await client.send('Network.enable');
-    
-    console.log('✅ CDP configurado');
-    
-    // Criar promise para capturar o PDF
-    const pdfPromise = new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error('Timeout aguardando PDF'));
-      }, 60000); // 60 segundos
+    // Interceptar a resposta do PDF
+    page.on('response', async (response) => {
+      const url = response.url();
+      const contentType = response.headers()['content-type'] || '';
       
-      client.on('Network.responseReceived', async ({ response }) => {
-        const url = response.url;
-        const mimeType = response.mimeType || '';
+      if (url.includes('DownloadConsultaPublica') || contentType.includes('pdf')) {
+        console.log(`\n📡 Response capturada:`);
+        console.log(`   URL: ${url.substring(url.length - 60)}`);
+        console.log(`   Content-Type: ${contentType}`);
+        console.log(`   Status: ${response.status()}`);
         
-        console.log(`📡 Response: ${url.substring(url.length - 50)}`);
-        console.log(`   MimeType: ${mimeType}`);
-        
-        if (mimeType.includes('pdf') || url.includes('DownloadConsultaPublica')) {
-          console.log('✓ PDF detectado!');
+        try {
+          const buffer = await response.buffer();
+          console.log(`✓ Buffer capturado: ${buffer.length} bytes`);
           
-          try {
-            // Pegar o corpo da resposta
-            const requestId = response.requestId;
-            const result = await client.send('Network.getResponseBody', { requestId });
-            
-            clearTimeout(timeout);
-            
-            if (result.base64Encoded) {
-              const buffer = Buffer.from(result.body, 'base64');
-              resolve({ buffer, mimeType, url });
-            } else {
-              const buffer = Buffer.from(result.body);
-              resolve({ buffer, mimeType, url });
-            }
-          } catch (e) {
-            console.log(`⚠️ Erro ao capturar body: ${e.message}`);
+          if (buffer.length > 0) {
+            pdfBuffer = buffer;
           }
+        } catch (e) {
+          console.log(`⚠️ Erro ao capturar buffer: ${e.message}`);
         }
-      });
+      }
     });
+    
+    page.on('request', (request) => {
+      // Permitir todas as requests
+      request.continue();
+    });
+    
+    console.log('✅ Interceptação configurada');
     
     // Clicar no link
     console.log(`\n🖱️ Clicando no link [${arquivoParaBaixar.index}]...`);
@@ -332,15 +307,17 @@ app.post('/download-susep', async (req, res) => {
     
     console.log('⏳ Aguardando PDF...');
     
-    // Aguardar o PDF
-    const pdfData = await pdfPromise;
+    // Aguardar o PDF ser capturado (máximo 30 segundos)
+    const startWait = Date.now();
+    while (!pdfBuffer && (Date.now() - startWait) < 30000) {
+      await page.waitForTimeout(500);
+    }
     
-    console.log(`✅ PDF capturado!`);
-    console.log(`📦 Tamanho: ${pdfData.buffer.length} bytes`);
-    console.log(`📋 MimeType: ${pdfData.mimeType}`);
+    if (!pdfBuffer) {
+      throw new Error('Timeout: PDF não foi capturado após 30 segundos');
+    }
     
-    const pdfBuffer = pdfData.buffer;
-    console.log(`📦 Buffer recebido: ${pdfBuffer.length} bytes`);
+    console.log(`✅ PDF obtido com sucesso!`);
 
     // Validar se é PDF
     const pdfHeader = pdfBuffer.toString('utf8', 0, 5);
@@ -353,10 +330,10 @@ app.post('/download-susep', async (req, res) => {
       console.log(preview);
       
       if (preview.includes('<html') || preview.includes('<!DOCTYPE')) {
-        throw new Error('Recebeu HTML ao invés de PDF - possível erro de sessão ou autenticação');
+        throw new Error('Recebeu HTML ao invés de PDF');
       }
       
-      throw new Error(`Arquivo não é um PDF válido. Content-Type: ${contentType}`);
+      throw new Error('Arquivo não é um PDF válido');
     }
 
     const tamanhoKB = (pdfBuffer.length / 1024).toFixed(2);
@@ -372,7 +349,7 @@ app.post('/download-susep', async (req, res) => {
 
     await browser.close();
 
-    // Preparar nome do arquivo para download
+    // Preparar nome do arquivo
     const filename = arquivoParaBaixar.nome.replace(/[^\w\.-]/g, '_');
 
     // Enviar PDF
@@ -411,7 +388,7 @@ app.post('/download-susep', async (req, res) => {
         tipo: error.name,
         numeroprocesso: req.body.numeroprocesso,
         timestamp: new Date().toISOString(),
-        dica: 'Verifique se o processo existe na SUSEP'
+        dica: 'Verifique os logs do Railway para mais detalhes'
       });
     }
   }
@@ -428,7 +405,7 @@ process.on('SIGTERM', () => {
 
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('\n' + '='.repeat(80));
-  console.log('🚀 API SUSEP v12.0 - FINAL WORKING VERSION!');
+  console.log('🚀 API SUSEP v12.3 - RESPONSE INTERCEPTION METHOD');
   console.log('='.repeat(80));
   console.log(`📍 Porta: ${PORT}`);
   console.log(`🌐 Host: 0.0.0.0`);
