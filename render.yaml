@@ -1,0 +1,49 @@
+services:
+  - type: web
+    name: susep-api
+    runtime: docker
+    repo: https://github.com/SEU_USUARIO/susep-api-download
+    region: oregon
+    plan: free
+    branch: main
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "3000"
+```
+
+⚠️ **IMPORTANTE:** Substitua `SEU_USUARIO` pelo seu nome de usuário do GitHub!
+
+4. **"Commit new file"**
+
+---
+
+### **Passo 5: Deletar e Recriar no Render**
+
+1. No Render, delete o serviço atual
+2. Aguarde 1 minuto
+3. Crie novamente:
+   - **"New +"** → **"Web Service"**
+   - Selecione o repositório
+   - **O Render AGORA vai detectar o render.yaml e usar Docker!**
+
+---
+
+## 🔍 Como Saber se Está Funcionando?
+
+Nos logs, você deve ver:
+
+✅ **CORRETO (usando Docker):**
+```
+==> Building from Dockerfile
+==> Pulling ghcr.io/puppeteer/puppeteer:21.6.1
+==> Step 1/8 : FROM ghcr.io/puppeteer/puppeteer
+```
+
+❌ **ERRADO (usando npm):**
+```
+==> Running build command 'npm install'
+==> npm error path /opt/render/project
