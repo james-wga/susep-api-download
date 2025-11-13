@@ -210,142 +210,139 @@ app.get('/health', (req, res) => {
 // Endpoint de download
 app.post('/download-susep', async (req, res) => {
   let browser = null;
-  const startTime = Date.now();
   
   try {
     const { numeroprocesso } = req.body;
     
     if (!numeroprocesso) {
       return res.status(400).json({
-        error: 'Parâmetro "numeroprocesso" não fornecido',
+        error: 'numeroprocesso não fornecido',
         exemplo: { numeroprocesso: '15414.614430/2024-02' }
       });
     }
 
-    console.log(`\n${'='.repeat(60)}`);
-    console.log(`📥 NOVA REQUISIÇÃO - ${new Date().toISOString()}`);
-    console.log(`📋 Processo: ${numeroprocesso}`);
-    console.log('='.repeat(60));
+    console.log(`\n📥 Processando: ${numeroprocesso}`);
 
-    // Iniciar Puppeteer
-    console.log('🌐 [1/6] Iniciando navegador Chrome...');
+    // Iniciar browser
+    console.log('🌐 Iniciando Chrome...');
     browser = await puppeteer.launch({
       headless: 'new',
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
         '--disable-gpu',
-        '--disable-web-security',
-        '--disable-features=IsolateOrigins,site-per-process'
-      ],
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined
+        '--disable-blink-features=AutomationControlled'
+      ]
     });
 
     const page = await browser.newPage();
     await page.setViewport({ width: 1920, height: 1080 });
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-    
-    console.log('✅ Navegador iniciado');
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
 
     // Acessar SUSEP
-    console.log('🔍 [2/6] Acessando site da SUSEP...');
+    console.log('🔍 Acessando SUSEP...');
     await page.goto('https://www2.susep.gov.br/safe/menumercado/REP2/Produto.aspx', {
-      waitUntil: 'networkidle2',
-      timeout: 60000
+      waitUntil: 'networkidle0',
+      timeout: 90000
     });
-    console.log('✅ Página SUSEP carregada');
 
-    // Aguardar e preencher campo
-    console.log('✍️ [3/6] Preenchendo número do processo...');
-    await page.waitForSelector('#txtNumeroProcesso', { timeout: 60000 });
-    await page.type('#txtNumeroProcesso', numeroprocesso);
-    console.log('✅ Campo preenchido');
+    console.log('⏳ Aguardando página carregar completamente...');
+    await page.waitForTimeout(5000);
 
-    // Buscar
-    console.log('🔎 [4/6] Executando busca...');
-    await Promise.all([
-      page.click('#btnConsultar'),
-      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {})
-    ]);
-    
-    await page.waitForTimeout(3000);
-    console.log('✅ Busca executada');
+    // Tentar múltiplos seletores
+    console.log('✍️ Procurando campo de busca...');
+    const selectors = [
+      '#txtNumeroProcesso',
+      'input[name*="Processo"]',
+      'input[type="text"]'
+    ];
 
-    // Encontrar link
-    console.log('📄 [5/6] Procurando link do PDF...');
-    
+    let inputFound = false;
+    for (const selector of selectors) {
+      try {
+        await page.waitForSelector(selector, { timeout: 10000 });
+        console.log(`✅ Campo encontrado: ${selector}`);
+        await page.type(selector, numeroprocesso);
+        inputFound = true;
+        break;
+      } catch (e) {
+        console.log(`⚠️ Seletor ${selector} não encontrado`);
+      }
+    }
+
+    if (!inputFound) {
+      await browser.close();
+      return res.status(500).json({
+        error: 'Campo de busca não encontrado na página da SUSEP',
+        dica: 'A SUSEP pode ter mudado a página'
+      });
+    }
+
+    // Buscar botão
+    console.log('🔎 Clicando em Buscar...');
+    const buttonSelectors = [
+      '#btnConsultar',
+      'input[type="submit"]',
+      'button[type="submit"]'
+    ];
+
+    let buttonClicked = false;
+    for (const selector of buttonSelectors) {
+      try {
+        await page.click(selector);
+        buttonClicked = true;
+        break;
+      } catch (e) {
+        console.log(`⚠️ Botão ${selector} não encontrado`);
+      }
+    }
+
+    if (!buttonClicked) {
+      await browser.close();
+      return res.status(500).json({
+        error: 'Botão de busca não encontrado'
+      });
+    }
+
+    // Aguardar resultado
+    console.log('⏳ Aguardando resultado...');
+    await page.waitForTimeout(5000);
+
+    // Encontrar PDF
+    console.log('📄 Procurando PDF...');
     const pdfLink = await page.evaluate(() => {
-      const selectors = [
-        'a[href*=".pdf"]',
-        'a[onclick*=".pdf"]',
-        'table a'
-      ];
-      
-      for (const selector of selectors) {
-        const elements = document.querySelectorAll(selector);
-        for (const el of elements) {
-          const href = el.href || el.getAttribute('onclick');
-          if (href && href.includes('.pdf')) {
-            if (el.href) return el.href;
-            
-            const match = href.match(/'([^']+\.pdf[^']*)'/);
-            if (match) return 'https://www2.susep.gov.br' + match[1];
-          }
-        }
-      }
-      
-      const allLinks = Array.from(document.querySelectorAll('a'));
-      for (const link of allLinks) {
-        if (link.textContent.toLowerCase().includes('download')) {
-          return link.href;
-        }
-      }
-      
-      return null;
+      const link = document.querySelector('a[href*=".pdf"]');
+      return link ? link.href : null;
     });
 
     if (!pdfLink) {
-      const screenshot = await page.screenshot({ encoding: 'base64', fullPage: false });
       await browser.close();
-      
-      console.log('❌ Link do PDF não encontrado');
       return res.status(404).json({
-        error: 'Link de download não encontrado',
-        dica: 'Verifique se o número do processo está correto e se existe PDF disponível',
-        numeroprocesso: numeroprocesso
+        error: 'PDF não encontrado',
+        dica: 'Verifique se o número do processo está correto'
       });
     }
 
-    console.log(`✅ Link encontrado: ${pdfLink.substring(0, 80)}...`);
+    console.log(`✅ Link: ${pdfLink}`);
 
-    // Download
-    console.log('⬇️ [6/6] Baixando PDF...');
+    // Baixar PDF
+    console.log('⬇️ Baixando...');
     const pdfResponse = await page.goto(pdfLink, {
       waitUntil: 'networkidle0',
-      timeout: 60000
+      timeout: 90000
     });
 
     const pdfBuffer = await pdfResponse.buffer();
-
+    
     if (!pdfBuffer.toString('utf8', 0, 5).includes('%PDF')) {
       await browser.close();
-      console.log('❌ Arquivo baixado não é um PDF válido');
-      return res.status(500).json({
-        error: 'Arquivo baixado não é um PDF válido'
-      });
+      return res.status(500).json({ error: 'Arquivo inválido' });
     }
 
     const tamanhoKB = (pdfBuffer.length / 1024).toFixed(2);
-    const tempoTotal = ((Date.now() - startTime) / 1000).toFixed(2);
-    
-    console.log(`✅ PDF baixado com sucesso!`);
-    console.log(`📊 Tamanho: ${tamanhoKB} KB`);
-    console.log(`⏱️ Tempo total: ${tempoTotal}s`);
-    console.log('='.repeat(60) + '\n');
+    console.log(`✅ Sucesso! ${tamanhoKB} KB\n`);
 
     await browser.close();
 
@@ -354,16 +351,13 @@ app.post('/download-susep', async (req, res) => {
     res.set({
       'Content-Type': 'application/pdf',
       'Content-Disposition': `attachment; filename="${filename}"`,
-      'Content-Length': pdfBuffer.length,
-      'X-Process-Time': `${tempoTotal}s`,
-      'X-File-Size': `${tamanhoKB}KB`
+      'Content-Length': pdfBuffer.length
     });
 
     res.send(pdfBuffer);
 
   } catch (error) {
-    console.error(`\n❌ ERRO: ${error.message}`);
-    console.error(`Stack: ${error.stack}\n`);
+    console.error(`❌ Erro: ${error.message}`);
     
     if (browser) {
       try { await browser.close(); } catch (e) {}
@@ -371,8 +365,7 @@ app.post('/download-susep', async (req, res) => {
 
     res.status(500).json({
       error: error.message,
-      tipo: error.name,
-      timestamp: new Date().toISOString()
+      tipo: error.name
     });
   }
 });
