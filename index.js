@@ -16,7 +16,7 @@ app.get('/', (req, res) => {
     <!DOCTYPE html>
     <html>
     <head>
-      <title>API SUSEP - Final</title>
+      <title>API SUSEP v10</title>
       <meta charset="utf-8">
       <style>
         body {
@@ -39,7 +39,6 @@ app.get('/', (req, res) => {
           color: white;
           border-radius: 20px;
           font-size: 13px;
-          font-weight: 600;
         }
         pre {
           background: #282c34;
@@ -54,7 +53,7 @@ app.get('/', (req, res) => {
     <body>
       <div class="container">
         <h1>✅ API SUSEP Download</h1>
-        <span class="badge">v9.0 - Enhanced Detection</span>
+        <span class="badge">v10.0 - Click Method</span>
         
         <h3>📡 Endpoint</h3>
         <pre>POST ${req.protocol}://${req.get('host')}/download-susep
@@ -63,6 +62,9 @@ app.get('/', (req, res) => {
   "numeroprocesso": "15414.900381/2013-67"
 }</pre>
 
+        <p style="margin-top: 20px; color: #6c757d;">
+          Agora clica no link ao invés de navegar diretamente, mantendo a sessão da SUSEP.
+        </p>
       </div>
     </body>
     </html>
@@ -72,7 +74,7 @@ app.get('/', (req, res) => {
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
-    version: '9.0',
+    version: '10.0',
     uptime: Math.floor(process.uptime())
   });
 });
@@ -118,10 +120,14 @@ app.post('/download-susep', async (req, res) => {
     const page = await browser.newPage();
     await page.setViewport({ width: 1366, height: 768 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+    
+    // Habilitar cookies e cache
+    await page.setCacheEnabled(true);
+    
     console.log('✅ Navegador pronto');
 
     console.log('\n🔍 Acessando SUSEP...');
-    await page.goto('https://www2.susep.gov.br/safe/menumercado/REP2/Produto.aspx/Consultar', {
+    await page.goto('https://www2.susep.gov.br/safe/menumercado/REP2/Produto.aspx', {
       waitUntil: 'networkidle2',
       timeout: CONFIG.navigationTimeout
     });
@@ -184,84 +190,40 @@ app.post('/download-susep', async (req, res) => {
       page.waitForTimeout(10000)
     ]);
     
-    // Aguardar elementos de download carregarem
     await page.waitForTimeout(3000);
-    
     console.log('✅ Resultado carregado');
 
-    console.log('\n📄 Buscando arquivos PDF com detecção avançada...');
+    console.log('\n📄 Buscando arquivos PDF...');
     
-    // Extrair informações dos arquivos com múltiplas estratégias
+    // Encontrar links de download
     const arquivos = await page.evaluate(() => {
       const results = [];
-      
-      console.log('🔍 Estratégia 1: Procurando a.linkDownloadRelatorio');
-      const links1 = document.querySelectorAll('a.linkDownloadRelatorio');
-      console.log(`Encontrados: ${links1.length}`);
-      
-      console.log('🔍 Estratégia 2: Procurando a com onclick*=Download');
-      const links2 = document.querySelectorAll('a[onclick*="Download"]');
-      console.log(`Encontrados: ${links2.length}`);
-      
-      console.log('🔍 Estratégia 3: Procurando a com onclick*=download (minúsculo)');
-      const links3 = document.querySelectorAll('a[onclick*="download"]');
-      console.log(`Encontrados: ${links3.length}`);
-      
-      console.log('🔍 Estratégia 4: Procurando a com texto "Download"');
-      const allLinks = Array.from(document.querySelectorAll('a'));
-      const links4 = allLinks.filter(a => a.textContent.toLowerCase().includes('download'));
-      console.log(`Encontrados: ${links4.length}`);
-      
-      // Combinar todos os links encontrados (sem duplicatas)
       const allDownloadLinks = new Set([
-        ...Array.from(links1),
-        ...Array.from(links2),
-        ...Array.from(links3),
-        ...links4
+        ...Array.from(document.querySelectorAll('a.linkDownloadRelatorio')),
+        ...Array.from(document.querySelectorAll('a[onclick*="Download"]')),
+        ...Array.from(document.querySelectorAll('a[onclick*="download"]'))
       ]);
       
-      console.log(`Total de links únicos: ${allDownloadLinks.size}`);
-      
-      allDownloadLinks.forEach((link, index) => {
+      allDownloadLinks.forEach((link) => {
         const onclick = link.getAttribute('onclick') || '';
-        const href = link.href || '';
         
-        console.log(`\nAnalisando link ${index + 1}:`);
-        console.log(`  Texto: ${link.textContent.trim()}`);
-        console.log(`  OnClick: ${onclick}`);
-        console.log(`  Href: ${href}`);
-        
-        // Tentar extrair o path do onclick
+        // Extrair path do onclick
         let path = '';
-        
-        // Padrão 1: location.href='/path'
         let match = onclick.match(/location\.href\s*=\s*['"]([^'"]+)['"]/);
         if (match) {
           path = match[1];
-          console.log(`  ✓ Path encontrado (padrão 1): ${path}`);
         }
         
-        // Padrão 2: window.location='/path'
         if (!path) {
           match = onclick.match(/window\.location\s*=\s*['"]([^'"]+)['"]/);
           if (match) {
             path = match[1];
-            console.log(`  ✓ Path encontrado (padrão 2): ${path}`);
           }
         }
         
-        // Padrão 3: href direto se não for javascript:
-        if (!path && href && !href.includes('javascript:')) {
-          path = href.replace('https://www2.susep.gov.br', '');
-          console.log(`  ✓ Path do href: ${path}`);
-        }
+        if (!path) return;
         
-        if (!path) {
-          console.log(`  ✗ Nenhum path encontrado`);
-          return;
-        }
-        
-        // Extrair nome do arquivo da tabela
+        // Extrair nome do arquivo
         let nomeArquivo = 'documento.pdf';
         const tr = link.closest('tr');
         if (tr) {
@@ -271,97 +233,133 @@ app.post('/download-susep', async (req, res) => {
             const pdfMatch = texto.match(/([^\n]+\.pdf)/i);
             if (pdfMatch) {
               nomeArquivo = pdfMatch[1].trim();
-              console.log(`  ✓ Nome do arquivo: ${nomeArquivo}`);
             }
           }
         }
-        
-        const url = path.startsWith('http') ? path : `https://www2.susep.gov.br${path}`;
         
         results.push({
           index: results.length + 1,
           nome: nomeArquivo,
           path: path,
-          url: url
+          onclick: onclick,
+          element: link.outerHTML
         });
-        
-        console.log(`  ✓ Arquivo adicionado: ${nomeArquivo}`);
       });
       
       return results;
     });
 
-    console.log(`\n📊 RESULTADO: ${arquivos.length} arquivos encontrados`);
-    
-    if (arquivos.length > 0) {
-      console.log('\n📎 Arquivos disponíveis:');
-      arquivos.forEach(arq => {
-        console.log(`  [${arq.index}] ${arq.nome}`);
-        console.log(`      ${arq.url}`);
-      });
-    } else {
-      // Se não encontrou nada, fazer debug completo
-      console.log('\n❌ Nenhum arquivo encontrado. Executando debug...');
-      
-      const debugInfo = await page.evaluate(() => {
-        return {
-          url: window.location.href,
-          allLinks: Array.from(document.querySelectorAll('a')).map(a => ({
-            text: a.textContent.trim().substring(0, 50),
-            href: a.href,
-            onclick: a.getAttribute('onclick')?.substring(0, 100),
-            class: a.className
-          })),
-          html: document.body.innerHTML.substring(0, 2000)
-        };
-      });
-      
-      console.log('\n📋 URL atual:', debugInfo.url);
-      console.log('\n📋 Todos os links:');
-      debugInfo.allLinks.forEach((link, i) => {
-        console.log(`[${i+1}] "${link.text}" -> ${link.href}`);
-        if (link.onclick) console.log(`    onClick: ${link.onclick}`);
-      });
-      
-      console.log('\n📄 HTML (primeiros 2000 chars):');
-      console.log(debugInfo.html);
-      
+    console.log(`✅ Encontrados ${arquivos.length} arquivos:`);
+    arquivos.forEach(arq => {
+      console.log(`  [${arq.index}] ${arq.nome}`);
+    });
+
+    if (arquivos.length === 0) {
       throw new Error('Nenhum arquivo PDF encontrado para este processo');
     }
 
-    // Selecionar qual arquivo baixar
-    let arquivoParaBaixar = arquivos[0];
-    
+    // Selecionar arquivo
+    let arquivoIndex = 0;
     if (indiceArquivo && indiceArquivo > 0 && indiceArquivo <= arquivos.length) {
-      arquivoParaBaixar = arquivos[indiceArquivo - 1];
-      console.log(`\n📎 Usando arquivo índice ${indiceArquivo}: ${arquivoParaBaixar.nome}`);
-    } else {
-      console.log(`\n📎 Baixando primeiro arquivo: ${arquivoParaBaixar.nome}`);
+      arquivoIndex = indiceArquivo - 1;
+    }
+    
+    const arquivoParaBaixar = arquivos[arquivoIndex];
+    console.log(`\n📎 Baixando: [${arquivoParaBaixar.index}] ${arquivoParaBaixar.nome}`);
+
+    // MÉTODO 1: Clicar no link usando JavaScript (mantém sessão)
+    console.log('\n🖱️ MÉTODO 1: Clicando no link via JavaScript...');
+    
+    let pdfBuffer = null;
+    
+    try {
+      // Configurar listener para capturar o download
+      const downloadPromise = new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('Timeout esperando PDF'));
+        }, 30000);
+
+        page.on('response', async (response) => {
+          try {
+            const url = response.url();
+            const contentType = response.headers()['content-type'] || '';
+            
+            console.log(`📡 Response: ${url.substring(0, 80)}`);
+            console.log(`   Content-Type: ${contentType}`);
+            
+            if (contentType.includes('pdf') || 
+                url.includes('DownloadConsultaPublica') ||
+                url.includes('.pdf')) {
+              
+              console.log('✓ PDF detectado, capturando buffer...');
+              const buffer = await response.buffer();
+              
+              clearTimeout(timeout);
+              resolve(buffer);
+            }
+          } catch (e) {
+            console.log(`⚠️ Erro ao processar response: ${e.message}`);
+          }
+        });
+      });
+
+      // Clicar no link
+      console.log('🖱️ Executando clique...');
+      await page.evaluate((onclick) => {
+        eval(onclick);
+      }, arquivoParaBaixar.onclick);
+      
+      console.log('⏳ Aguardando PDF...');
+      pdfBuffer = await downloadPromise;
+      console.log('✅ PDF capturado!');
+      
+    } catch (clickError) {
+      console.log(`⚠️ Método 1 falhou: ${clickError.message}`);
+      
+      // MÉTODO 2: Usar CDP para baixar
+      console.log('\n🔄 MÉTODO 2: Tentando via CDP...');
+      
+      try {
+        const client = await page.target().createCDPSession();
+        await client.send('Page.setDownloadBehavior', {
+          behavior: 'allow',
+          downloadPath: '/tmp'
+        });
+        
+        // Executar o clique novamente
+        await page.evaluate((onclick) => {
+          eval(onclick);
+        }, arquivoParaBaixar.onclick);
+        
+        await page.waitForTimeout(5000);
+        
+        // Tentar pegar o PDF da última navegação
+        const currentUrl = page.url();
+        if (currentUrl.includes('DownloadConsultaPublica')) {
+          const response = await page.goto(currentUrl, {
+            waitUntil: 'networkidle0',
+            timeout: CONFIG.navigationTimeout
+          });
+          
+          if (response) {
+            pdfBuffer = await response.buffer();
+          }
+        }
+      } catch (cdpError) {
+        console.log(`⚠️ Método 2 falhou: ${cdpError.message}`);
+      }
     }
 
-    console.log(`\n⬇️ Baixando: ${arquivoParaBaixar.url}`);
-
-    // Baixar o PDF
-    const pdfResponse = await page.goto(arquivoParaBaixar.url, {
-      waitUntil: 'networkidle0',
-      timeout: CONFIG.navigationTimeout
-    });
-
-    if (!pdfResponse) {
-      throw new Error('Falha ao acessar o PDF');
+    if (!pdfBuffer || pdfBuffer.length === 0) {
+      throw new Error('Não foi possível capturar o PDF após múltiplas tentativas');
     }
-
-    const pdfBuffer = await pdfResponse.buffer();
-    const contentType = pdfResponse.headers()['content-type'];
-
-    console.log(`📦 Buffer: ${pdfBuffer.length} bytes`);
-    console.log(`📋 Content-Type: ${contentType}`);
 
     // Validar PDF
     const pdfHeader = pdfBuffer.toString('utf8', 0, 5);
     if (!pdfHeader.includes('%PDF')) {
-      console.log(`⚠️ Não é PDF! Header: ${pdfHeader}`);
-      console.log(`📄 Conteúdo: ${pdfBuffer.toString('utf8', 0, 200)}`);
+      console.log(`⚠️ Conteúdo recebido não é PDF`);
+      console.log(`Header: ${pdfHeader}`);
+      console.log(`Preview: ${pdfBuffer.toString('utf8', 0, 200)}`);
       throw new Error('Arquivo baixado não é um PDF válido');
     }
 
@@ -421,7 +419,7 @@ process.on('SIGTERM', () => {
 
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('\n' + '='.repeat(80));
-  console.log('🚀 API SUSEP v9.0 - ENHANCED DETECTION');
+  console.log('🚀 API SUSEP v10.0 - CLICK METHOD');
   console.log('='.repeat(80));
   console.log(`📍 Porta: ${PORT}`);
   console.log(`📡 Endpoint: POST /download-susep`);
