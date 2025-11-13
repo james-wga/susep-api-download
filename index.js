@@ -8,7 +8,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 const CONFIG = {
-  timeout: 150000,
+  timeout: 180000, // 3 minutos
   puppeteerTimeout: 120000,
   navigationTimeout: 90000
 };
@@ -18,11 +18,11 @@ app.get('/', (req, res) => {
     <!DOCTYPE html>
     <html>
     <head>
-      <title>API SUSEP - Railway</title>
+      <title>API SUSEP v7.0</title>
       <meta charset="utf-8">
       <style>
         body {
-          font-family: system-ui, -apple-system, sans-serif;
+          font-family: system-ui;
           max-width: 800px;
           margin: 50px auto;
           padding: 20px;
@@ -35,8 +35,7 @@ app.get('/', (req, res) => {
           box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         }
         h1 { color: #2c3e50; }
-        .status { 
-          display: inline-block;
+        .badge { 
           padding: 5px 15px;
           background: #27ae60;
           color: white;
@@ -54,14 +53,14 @@ app.get('/', (req, res) => {
     </head>
     <body>
       <div class="container">
-        <h1>📄 API Download SUSEP</h1>
-        <span class="status">✓ Online v6.0</span>
+        <h1>📄 API SUSEP Download</h1>
+        <span class="badge">v7.0 - Smart PDF Detection</span>
         
         <h3>📡 Endpoint</h3>
         <pre>POST ${req.protocol}://${req.get('host')}/download-susep
 
 {
-  "numeroprocesso": "15414.614430/2024-02"
+  "numeroprocesso": "15414.900381/2013-67"
 }</pre>
       </div>
     </body>
@@ -70,97 +69,252 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', async (req, res) => {
-  const memUsage = process.memoryUsage();
+  const mem = process.memoryUsage();
   res.json({
-    status: 'healthy',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    memory: {
-      heapUsed: `${Math.round(memUsage.heapUsed / 1024 / 1024)}MB`,
-      heapTotal: `${Math.round(memUsage.heapTotal / 1024 / 1024)}MB`
-    },
-    version: '6.0'
+    status: 'ok',
+    version: '7.0',
+    uptime: Math.floor(process.uptime()),
+    memory: `${Math.round(mem.heapUsed/1024/1024)}MB`
   });
 });
 
-// Função para encontrar e validar link do PDF
-async function findAndValidatePDFLink(page) {
-  console.log('🔍 Procurando link do PDF...');
+// Função para esperar por download via CDP
+async function waitForDownload(page, timeout = 30000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error('Timeout esperando download'));
+    }, timeout);
+
+    page.on('response', async (response) => {
+      const url = response.url();
+      const contentType = response.headers()['content-type'] || '';
+      
+      if (contentType.includes('application/pdf') || url.includes('.pdf')) {
+        clearTimeout(timer);
+        try {
+          const buffer = await response.buffer();
+          resolve({ buffer, url, contentType });
+        } catch (e) {
+          reject(e);
+        }
+      }
+    });
+  });
+}
+
+// Função para encontrar e baixar PDF de forma inteligente
+async function smartDownloadPDF(page) {
+  console.log('\n🧠 DOWNLOAD INTELIGENTE INICIADO');
+  console.log('='.repeat(70));
   
+  // Aguardar elementos carregarem
   await page.waitForTimeout(4000);
   
-  // Buscar TODOS os links e analisar
-  const allLinks = await page.evaluate(() => {
-    return Array.from(document.querySelectorAll('a')).map(a => ({
-      text: a.textContent.trim(),
-      href: a.href,
-      onclick: a.getAttribute('onclick') || ''
-    }));
+  // ETAPA 1: Análise completa da página
+  console.log('\n📊 ETAPA 1: Analisando página...');
+  const pageAnalysis = await page.evaluate(() => {
+    const analysis = {
+      allLinks: [],
+      forms: [],
+      buttons: [],
+      iframes: [],
+      scripts: []
+    };
+    
+    // Links
+    document.querySelectorAll('a').forEach(a => {
+      analysis.allLinks.push({
+        text: a.textContent?.trim() || '',
+        href: a.href || '',
+        onclick: a.getAttribute('onclick') || '',
+        target: a.target || '',
+        id: a.id || '',
+        className: a.className || ''
+      });
+    });
+    
+    // Forms
+    document.querySelectorAll('form').forEach(form => {
+      analysis.forms.push({
+        action: form.action,
+        method: form.method,
+        id: form.id
+      });
+    });
+    
+    // Buttons
+    document.querySelectorAll('button, input[type="button"], input[type="submit"]').forEach(btn => {
+      analysis.buttons.push({
+        text: btn.textContent?.trim() || btn.value || '',
+        type: btn.type,
+        onclick: btn.getAttribute('onclick') || ''
+      });
+    });
+    
+    // Iframes
+    document.querySelectorAll('iframe').forEach(iframe => {
+      analysis.iframes.push({
+        src: iframe.src,
+        id: iframe.id
+      });
+    });
+    
+    return analysis;
   });
   
-  console.log(`📋 Total de links encontrados: ${allLinks.length}`);
+  console.log(`✓ Links encontrados: ${pageAnalysis.allLinks.length}`);
+  console.log(`✓ Formulários: ${pageAnalysis.forms.length}`);
+  console.log(`✓ Botões: ${pageAnalysis.buttons.length}`);
+  console.log(`✓ Iframes: ${pageAnalysis.iframes.length}`);
   
-  // Filtrar links relevantes
-  const relevantLinks = allLinks.filter(link => {
+  // ETAPA 2: Procurar link direto para PDF
+  console.log('\n🎯 ETAPA 2: Procurando link direto do PDF...');
+  
+  const directPDFLinks = pageAnalysis.allLinks.filter(link => 
+    link.href.toLowerCase().includes('.pdf')
+  );
+  
+  if (directPDFLinks.length > 0) {
+    console.log(`✅ Encontrados ${directPDFLinks.length} links diretos para PDF`);
+    directPDFLinks.forEach((link, i) => {
+      console.log(`  [${i+1}] ${link.text.substring(0, 40)} -> ${link.href.substring(0, 70)}`);
+    });
+    
+    // Tentar baixar o primeiro
+    for (const link of directPDFLinks) {
+      try {
+        console.log(`\n⬇️ Tentando baixar: ${link.href}`);
+        const response = await page.goto(link.href, {
+          waitUntil: 'networkidle0',
+          timeout: CONFIG.navigationTimeout
+        });
+        
+        const buffer = await response.buffer();
+        const contentType = response.headers()['content-type'];
+        
+        if (buffer.toString('utf8', 0, 5).includes('%PDF')) {
+          console.log('✅ PDF válido baixado!');
+          return buffer;
+        } else {
+          console.log(`⚠️ Não é PDF. Content-Type: ${contentType}`);
+        }
+      } catch (e) {
+        console.log(`❌ Erro ao baixar: ${e.message}`);
+      }
+    }
+  }
+  
+  // ETAPA 3: Procurar links de anexo/download
+  console.log('\n🎯 ETAPA 3: Procurando links de anexo/download...');
+  
+  const downloadLinks = pageAnalysis.allLinks.filter(link => {
     const text = link.text.toLowerCase();
     const href = link.href.toLowerCase();
-    
     return (
-      href.includes('.pdf') ||
-      href.includes('anexo') ||
-      href.includes('download') ||
-      href.includes('arquivo') ||
-      text.includes('anexo') ||
-      text.includes('download') ||
-      text.includes('pdf')
+      text.includes('anexo') || text.includes('download') || 
+      text.includes('pdf') || text.includes('arquivo') ||
+      href.includes('anexo') || href.includes('download') ||
+      href.includes('arquivo')
     );
   });
   
-  console.log(`✓ Links relevantes: ${relevantLinks.length}`);
-  relevantLinks.forEach((link, i) => {
-    console.log(`  [${i+1}] ${link.text.substring(0, 40)} -> ${link.href.substring(0, 60)}`);
+  console.log(`✓ Links de download: ${downloadLinks.length}`);
+  downloadLinks.forEach((link, i) => {
+    console.log(`  [${i+1}] "${link.text}" -> ${link.href.substring(0, 70)}`);
   });
   
-  // Se tiver poucos links, listar todos para debug
-  if (allLinks.length < 20) {
-    console.log('\n📋 Todos os links (página tem poucos):');
-    allLinks.forEach((link, i) => {
-      console.log(`  [${i+1}] "${link.text.substring(0, 40)}" -> ${link.href.substring(0, 60)}`);
-    });
+  // ETAPA 4: Tentar clicar em links e interceptar o download
+  if (downloadLinks.length > 0) {
+    console.log('\n🖱️ ETAPA 4: Tentando clicar nos links...');
+    
+    for (const link of downloadLinks.slice(0, 3)) { // Tentar os 3 primeiros
+      try {
+        console.log(`\n🔄 Clicando em: "${link.text}"`);
+        
+        // Configurar listener para capturar resposta PDF
+        const downloadPromise = waitForDownload(page, 15000);
+        
+        // Clicar no link
+        await page.evaluate((href) => {
+          const link = Array.from(document.querySelectorAll('a')).find(a => a.href === href);
+          if (link) {
+            link.click();
+            return true;
+          }
+          return false;
+        }, link.href);
+        
+        // Aguardar download
+        try {
+          const result = await downloadPromise;
+          console.log(`✅ Download capturado! Content-Type: ${result.contentType}`);
+          
+          if (result.buffer.toString('utf8', 0, 5).includes('%PDF')) {
+            console.log('✅ PDF válido!');
+            return result.buffer;
+          }
+        } catch (downloadError) {
+          console.log(`⚠️ Timeout ou não houve download: ${downloadError.message}`);
+          
+          // Tentar navegar diretamente
+          console.log('🔄 Tentando navegação direta...');
+          const response = await page.goto(link.href, {
+            waitUntil: 'networkidle0',
+            timeout: 20000
+          });
+          
+          if (response) {
+            const buffer = await response.buffer();
+            if (buffer.toString('utf8', 0, 5).includes('%PDF')) {
+              console.log('✅ PDF obtido por navegação!');
+              return buffer;
+            }
+          }
+        }
+        
+      } catch (clickError) {
+        console.log(`❌ Erro no clique: ${clickError.message}`);
+      }
+    }
   }
   
-  // Retornar o link mais provável
-  if (relevantLinks.length > 0) {
-    console.log(`✅ Usando link: ${relevantLinks[0].href}`);
-    return relevantLinks[0].href;
+  // ETAPA 5: Procurar em iframes
+  if (pageAnalysis.iframes.length > 0) {
+    console.log('\n🎯 ETAPA 5: Verificando iframes...');
+    
+    for (const iframe of pageAnalysis.iframes) {
+      if (iframe.src && iframe.src.includes('.pdf')) {
+        console.log(`✅ PDF em iframe: ${iframe.src}`);
+        try {
+          const response = await page.goto(iframe.src, {
+            waitUntil: 'networkidle0',
+            timeout: CONFIG.navigationTimeout
+          });
+          const buffer = await response.buffer();
+          
+          if (buffer.toString('utf8', 0, 5).includes('%PDF')) {
+            return buffer;
+          }
+        } catch (e) {
+          console.log(`❌ Erro ao acessar iframe: ${e.message}`);
+        }
+      }
+    }
   }
   
-  // Se não achou nada relevante mas tem poucos links, usar o primeiro
-  if (allLinks.length > 0 && allLinks.length < 10) {
-    console.log(`⚠️ Nenhum link relevante, usando primeiro disponível: ${allLinks[0].href}`);
-    return allLinks[0].href;
-  }
-  
-  return null;
-}
-
-// Função para baixar PDF via CDP (Chrome DevTools Protocol)
-async function downloadPDFViaCDP(page, url) {
-  console.log('📥 Tentando download via CDP...');
-  
-  const client = await page.target().createCDPSession();
-  await client.send('Page.setDownloadBehavior', {
-    behavior: 'allow',
-    downloadPath: '/tmp'
+  // ETAPA 6: Debug completo
+  console.log('\n❌ ETAPA 6: Nenhum PDF encontrado. Debug completo:');
+  console.log('\n📋 TODOS OS LINKS DA PÁGINA:');
+  pageAnalysis.allLinks.forEach((link, i) => {
+    console.log(`[${i+1}] "${link.text.substring(0, 50)}" -> ${link.href.substring(0, 80)}`);
   });
   
-  // Navegar para o URL
-  const response = await page.goto(url, {
-    waitUntil: 'networkidle0',
-    timeout: CONFIG.navigationTimeout
-  });
+  // Capturar HTML
+  const html = await page.content();
+  console.log('\n📄 HTML da página (2000 chars):');
+  console.log(html.substring(0, 2000));
   
-  return response;
+  throw new Error('Nenhum PDF encontrado após todas as tentativas');
 }
 
 // Endpoint principal
@@ -177,15 +331,16 @@ app.post('/download-susep', async (req, res) => {
     if (!numeroprocesso) {
       return res.status(400).json({
         error: 'numeroprocesso é obrigatório',
-        exemplo: { numeroprocesso: '15414.614430/2024-02' }
+        exemplo: { numeroprocesso: '15414.900381/2013-67' }
       });
     }
 
-    console.log(`\n${'='.repeat(70)}`);
-    console.log(`📥 [${new Date().toISOString()}] Processo: ${numeroprocesso}`);
-    console.log('='.repeat(70));
+    console.log(`\n${'='.repeat(80)}`);
+    console.log(`📥 REQUISIÇÃO - ${new Date().toISOString()}`);
+    console.log(`📋 Processo: ${numeroprocesso}`);
+    console.log('='.repeat(80));
 
-    console.log('🌐 Iniciando navegador...');
+    console.log('\n🌐 Iniciando navegador...');
     browser = await puppeteer.launch({
       headless: 'new',
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
@@ -195,7 +350,7 @@ app.post('/download-susep', async (req, res) => {
         '--disable-dev-shm-usage',
         '--disable-gpu',
         '--disable-software-rasterizer',
-        '--disable-extensions',
+        '--no-first-run',
         '--disable-blink-features=AutomationControlled'
       ],
       timeout: CONFIG.puppeteerTimeout
@@ -203,9 +358,9 @@ app.post('/download-susep', async (req, res) => {
 
     const page = await browser.newPage();
     await page.setViewport({ width: 1366, height: 768 });
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     
-    console.log('✅ Navegador pronto');
+    console.log('✅ Navegador pronto\n');
 
     console.log('🔍 Acessando SUSEP...');
     await page.goto('https://www2.susep.gov.br/safe/menumercado/REP2/Produto.aspx', {
@@ -214,13 +369,14 @@ app.post('/download-susep', async (req, res) => {
     });
     
     await page.waitForTimeout(3000);
-    console.log('✅ Página carregada');
+    console.log('✅ Página carregada\n');
 
     console.log('✍️ Preenchendo formulário...');
     
     const inputSelectors = [
       '#txtNumeroProcesso',
       'input[name*="Processo"]',
+      'input[id*="Processo"]',
       'input[type="text"]'
     ];
 
@@ -229,6 +385,7 @@ app.post('/download-susep', async (req, res) => {
       try {
         const element = await page.$(selector);
         if (element) {
+          await element.click({ clickCount: 3 });
           await element.type(numeroprocesso, { delay: 50 });
           console.log(`✅ Campo preenchido: ${selector}`);
           filled = true;
@@ -243,11 +400,12 @@ app.post('/download-susep', async (req, res) => {
       throw new Error('Campo de busca não encontrado');
     }
 
-    console.log('🔎 Buscando...');
+    console.log('\n🔎 Submetendo busca...');
     const buttonSelectors = [
       '#btnConsultar',
       'input[type="submit"]',
-      'button[type="submit"]'
+      'button[type="submit"]',
+      'input[value*="Consultar"]'
     ];
 
     let clicked = false;
@@ -266,119 +424,24 @@ app.post('/download-susep', async (req, res) => {
       throw new Error('Botão de busca não encontrado');
     }
 
-    console.log('⏳ Aguardando resultado...');
+    console.log('\n⏳ Aguardando resultado...');
     await Promise.race([
-      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {}),
-      page.waitForTimeout(8000)
+      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 25000 }).catch(() => {}),
+      page.waitForTimeout(10000)
     ]);
+    console.log('✅ Resultado carregado\n');
 
-    // Procurar PDF
-    const pdfLink = await findAndValidatePDFLink(page);
-
-    if (!pdfLink) {
-      // Capturar HTML para debug
-      const html = await page.content();
-      console.log('📄 HTML da página (primeiros 1000 chars):');
-      console.log(html.substring(0, 1000));
-      
-      throw new Error('Link do PDF não encontrado. Verifique se o processo existe na SUSEP.');
-    }
-
-    console.log('⬇️ Baixando arquivo...');
-    console.log(`🔗 URL: ${pdfLink}`);
-    
-    // Tentar baixar o arquivo
-    let pdfBuffer = null;
-    let contentType = null;
-    
-    try {
-      // MÉTODO 1: Navegação direta
-      console.log('📥 Método 1: Navegação direta');
-      const response = await page.goto(pdfLink, {
-        waitUntil: 'networkidle0',
-        timeout: CONFIG.navigationTimeout
-      });
-
-      if (response) {
-        contentType = response.headers()['content-type'];
-        console.log(`📋 Content-Type: ${contentType}`);
-        
-        pdfBuffer = await response.buffer();
-        console.log(`📦 Buffer size: ${pdfBuffer.length} bytes`);
-        
-        // Verificar os primeiros bytes
-        const firstBytes = pdfBuffer.toString('utf8', 0, 20);
-        console.log(`🔍 Primeiros bytes: ${firstBytes}`);
-      }
-    } catch (navError) {
-      console.log(`⚠️ Método 1 falhou: ${navError.message}`);
-      
-      // MÉTODO 2: Tentar clicar no link e capturar download
-      console.log('📥 Método 2: Clicar no link');
-      
-      try {
-        // Configurar captura de download
-        const client = await page.target().createCDPSession();
-        
-        // Interceptar requests
-        await client.send('Network.enable');
-        
-        // Clicar no link
-        await page.evaluate((url) => {
-          const link = Array.from(document.querySelectorAll('a')).find(a => a.href === url);
-          if (link) link.click();
-        }, pdfLink);
-        
-        await page.waitForTimeout(5000);
-        
-        // Tentar navegar novamente
-        const response2 = await page.goto(pdfLink, { 
-          waitUntil: 'networkidle0',
-          timeout: CONFIG.navigationTimeout 
-        });
-        
-        if (response2) {
-          pdfBuffer = await response2.buffer();
-          contentType = response2.headers()['content-type'];
-        }
-      } catch (clickError) {
-        console.log(`⚠️ Método 2 falhou: ${clickError.message}`);
-      }
-    }
-
-    if (!pdfBuffer || pdfBuffer.length === 0) {
-      throw new Error('Não foi possível baixar o arquivo (buffer vazio)');
-    }
-
-    // Validar se é PDF
-    const pdfHeader = pdfBuffer.toString('utf8', 0, 5);
-    const isValidPDF = pdfHeader.includes('%PDF');
-    
-    console.log(`🔍 Validação PDF: ${isValidPDF}`);
-    console.log(`📋 Header: "${pdfHeader}"`);
-    console.log(`📋 Content-Type: ${contentType}`);
-    
-    if (!isValidPDF) {
-      // Se não for PDF, pode ser HTML de erro ou redirect
-      const contentPreview = pdfBuffer.toString('utf8', 0, 500);
-      console.log('📄 Conteúdo recebido (primeiros 500 chars):');
-      console.log(contentPreview);
-      
-      // Verificar se é HTML
-      if (contentPreview.includes('<html') || contentPreview.includes('<!DOCTYPE')) {
-        throw new Error('Recebeu HTML ao invés de PDF. O link pode estar incorreto ou exigir autenticação.');
-      }
-      
-      throw new Error(`Arquivo não é PDF válido. Content-Type: ${contentType || 'desconhecido'}`);
-    }
+    // DOWNLOAD INTELIGENTE
+    const pdfBuffer = await smartDownloadPDF(page);
 
     const tamanhoKB = (pdfBuffer.length / 1024).toFixed(2);
     const tempoTotal = ((Date.now() - startTime) / 1000).toFixed(2);
     
-    console.log(`✅ PDF baixado com sucesso!`);
+    console.log(`\n${'='.repeat(80)}`);
+    console.log(`✅ SUCESSO!`);
     console.log(`📊 Tamanho: ${tamanhoKB} KB`);
     console.log(`⏱️  Tempo: ${tempoTotal}s`);
-    console.log('='.repeat(70) + '\n');
+    console.log('='.repeat(80) + '\n');
 
     await browser.close();
 
@@ -395,9 +458,10 @@ app.post('/download-susep', async (req, res) => {
     res.send(pdfBuffer);
 
   } catch (error) {
-    console.error(`\n❌ ERRO: ${error.message}`);
-    console.error('Stack:', error.stack);
-    console.log('='.repeat(70) + '\n');
+    console.error(`\n${'='.repeat(80)}`);
+    console.error(`❌ ERRO: ${error.message}`);
+    console.error(`Stack: ${error.stack}`);
+    console.error('='.repeat(80) + '\n');
     
     if (browser) {
       try { await browser.close(); } catch (e) {}
@@ -408,7 +472,8 @@ app.post('/download-susep', async (req, res) => {
         error: error.message,
         tipo: error.name,
         numeroprocesso: req.body.numeroprocesso,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        dica: 'Verifique os logs para mais detalhes'
       });
     }
   }
@@ -418,23 +483,19 @@ process.on('unhandledRejection', (error) => {
   console.error('❌ Unhandled Rejection:', error);
 });
 
-process.on('uncaughtException', (error) => {
-  console.error('❌ Uncaught Exception:', error);
-});
-
 process.on('SIGTERM', () => {
-  console.log('🛑 SIGTERM - Encerrando...');
+  console.log('🛑 Encerrando...');
   process.exit(0);
 });
 
 const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log('\n' + '='.repeat(70));
-  console.log('🚀 API SUSEP v6.0 - PDF Validation Fix');
-  console.log('='.repeat(70));
+  console.log('\n' + '='.repeat(80));
+  console.log('🚀 API SUSEP v7.0 - SMART PDF DETECTION');
+  console.log('='.repeat(80));
   console.log(`📍 Porta: ${PORT}`);
-  console.log(`⏱️  Timeout: ${CONFIG.timeout}ms`);
-  console.log('='.repeat(70));
-  console.log('✅ Pronto!\n');
+  console.log(`⏱️  Timeout: ${CONFIG.timeout / 1000}s`);
+  console.log('='.repeat(80));
+  console.log('✅ Online!\n');
 });
 
 server.timeout = CONFIG.timeout;
