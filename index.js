@@ -143,7 +143,7 @@ app.post('/download-susep', async (req, res) => {
       timeout: CONFIG.navigationTimeout
     });
     await page.waitForTimeout(3000);
-    console.log('✅ Página inicial carregada');
+    console.log('✅ Página de consulta carregada');
 
     console.log('\n✍️ Preenchendo busca...');
     const input = await page.$('#txtNumeroProcesso') || await page.$('input[type="text"]');
@@ -260,16 +260,42 @@ app.post('/download-susep', async (req, res) => {
     
     console.log(`🔗 URL de download: ${downloadUrl}`);
 
-    // Baixar o PDF navegando para a URL
-    console.log('\n⬇️ Baixando PDF...');
+    // Baixar o PDF clicando no link (mantém sessão SUSEP)
+    console.log('\n⬇️ Baixando PDF via clique no link...');
     
-    const pdfResponse = await page.goto(downloadUrl, {
+    // Encontrar e clicar no link específico na página
+    const clickSuccess = await page.evaluate((targetIndex) => {
+      const links = document.querySelectorAll('a.linkDownloadRelatorio, a[onclick*="Download"]');
+      
+      if (links[targetIndex - 1]) {
+        const link = links[targetIndex - 1];
+        const onclick = link.getAttribute('onclick');
+        
+        console.log(`Clicando no link ${targetIndex}: ${onclick}`);
+        
+        // Executar o onclick
+        if (onclick) {
+          eval(onclick);
+          return true;
+        }
+      }
+      return false;
+    }, arquivoParaBaixar.index);
+
+    if (!clickSuccess) {
+      throw new Error('Não foi possível clicar no link de download');
+    }
+
+    console.log('✅ Clique executado, aguardando navegação...');
+    
+    // Aguardar a navegação para o PDF
+    const pdfResponse = await page.waitForNavigation({
       waitUntil: 'networkidle0',
       timeout: CONFIG.navigationTimeout
     });
 
     if (!pdfResponse) {
-      throw new Error('Nenhuma resposta ao tentar baixar o PDF');
+      throw new Error('Nenhuma resposta após clicar no link');
     }
 
     const status = pdfResponse.status();
@@ -277,6 +303,7 @@ app.post('/download-susep', async (req, res) => {
     
     console.log(`📡 Status HTTP: ${status}`);
     console.log(`📋 Content-Type: ${contentType}`);
+    console.log(`🌐 URL final: ${page.url()}`);
 
     if (status !== 200) {
       throw new Error(`Erro HTTP ${status} ao baixar o PDF`);
