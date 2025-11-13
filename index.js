@@ -41,14 +41,6 @@ app.get('/', (req, res) => {
           font-size: 13px;
           font-weight: 600;
         }
-        .success {
-          background: #d4edda;
-          border-left: 4px solid #28a745;
-          padding: 16px;
-          margin: 20px 0;
-          border-radius: 4px;
-          color: #155724;
-        }
         pre {
           background: #282c34;
           color: #61dafb;
@@ -62,26 +54,10 @@ app.get('/', (req, res) => {
     <body>
       <div class="container">
         <h1>✅ API SUSEP Download</h1>
-        <span class="badge">v8.0 FINAL - Working!</span>
+        <span class="badge">v9.0 - Enhanced Detection</span>
         
-        <div class="success">
-          <strong>✓ Problema Resolvido!</strong><br>
-          Agora detecta corretamente os links JavaScript da SUSEP e baixa os PDFs.
-        </div>
-
         <h3>📡 Endpoint</h3>
         <pre>POST ${req.protocol}://${req.get('host')}/download-susep
-
-{
-  "numeroprocesso": "15414.900381/2013-67"
-}</pre>
-
-        <h3>📦 Resposta</h3>
-        <p>Retorna o arquivo PDF diretamente (binary)</p>
-        <p><strong>Nota:</strong> Se houver múltiplos PDFs, retorna o primeiro disponível.</p>
-
-        <h3>🔍 Listar Arquivos Disponíveis</h3>
-        <pre>POST ${req.protocol}://${req.get('host')}/listar-arquivos
 
 {
   "numeroprocesso": "15414.900381/2013-67"
@@ -96,118 +72,9 @@ app.get('/', (req, res) => {
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
-    version: '8.0',
+    version: '9.0',
     uptime: Math.floor(process.uptime())
   });
-});
-
-// Endpoint para listar arquivos (não baixa)
-app.post('/listar-arquivos', async (req, res) => {
-  let browser = null;
-  
-  try {
-    const { numeroprocesso } = req.body;
-    
-    if (!numeroprocesso) {
-      return res.status(400).json({
-        error: 'numeroprocesso é obrigatório'
-      });
-    }
-
-    console.log(`\n📋 Listando arquivos do processo: ${numeroprocesso}`);
-
-    browser = await puppeteer.launch({
-      headless: 'new',
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-    });
-
-    const page = await browser.newPage();
-    await page.setViewport({ width: 1366, height: 768 });
-    
-    await page.goto('https://www2.susep.gov.br/safe/menumercado/REP2/Produto.aspx', {
-      waitUntil: 'networkidle2',
-      timeout: CONFIG.navigationTimeout
-    });
-    
-    await page.waitForTimeout(3000);
-
-    // Preencher e buscar
-    const input = await page.$('#txtNumeroProcesso') || await page.$('input[type="text"]');
-    if (input) {
-      await input.type(numeroprocesso, { delay: 50 });
-    }
-
-    const button = await page.$('#btnConsultar') || await page.$('input[type="submit"]');
-    if (button) {
-      await button.click();
-    }
-
-    await Promise.race([
-      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {}),
-      page.waitForTimeout(8000)
-    ]);
-
-    // Buscar arquivos
-    const arquivos = await page.evaluate(() => {
-      const links = Array.from(document.querySelectorAll('a.linkDownloadRelatorio, a[onclick*="Download"]'));
-      
-      return links.map((link, index) => {
-        const onclick = link.getAttribute('onclick') || '';
-        const match = onclick.match(/location\.href='([^']+)'/);
-        const path = match ? match[1] : '';
-        
-        // Extrair nome do arquivo da tabela (célula anterior)
-        let nomeArquivo = 'documento.pdf';
-        const tr = link.closest('tr');
-        if (tr) {
-          const firstCell = tr.querySelector('td');
-          if (firstCell) {
-            const texto = firstCell.textContent.trim();
-            const pdfMatch = texto.match(/([^\n]+\.pdf)/i);
-            if (pdfMatch) {
-              nomeArquivo = pdfMatch[1].trim();
-            }
-          }
-        }
-        
-        return {
-          index: index + 1,
-          nome: nomeArquivo,
-          path: path,
-          url: path ? `https://www2.susep.gov.br${path}` : null
-        };
-      }).filter(a => a.url);
-    });
-
-    await browser.close();
-
-    console.log(`✅ Encontrados ${arquivos.length} arquivos`);
-    arquivos.forEach(arq => {
-      console.log(`  [${arq.index}] ${arq.nome}`);
-    });
-
-    res.json({
-      status: 'sucesso',
-      processo: numeroprocesso,
-      totalArquivos: arquivos.length,
-      arquivos: arquivos
-    });
-
-  } catch (error) {
-    console.error(`❌ Erro: ${error.message}`);
-    
-    if (browser) {
-      try { await browser.close(); } catch (e) {}
-    }
-
-    if (!res.headersSent) {
-      res.status(500).json({
-        error: error.message,
-        processo: req.body.numeroprocesso
-      });
-    }
-  }
 });
 
 // Endpoint principal de download
@@ -231,9 +98,6 @@ app.post('/download-susep', async (req, res) => {
     console.log(`\n${'='.repeat(80)}`);
     console.log(`📥 DOWNLOAD SUSEP - ${new Date().toISOString()}`);
     console.log(`📋 Processo: ${numeroprocesso}`);
-    if (indiceArquivo) {
-      console.log(`📎 Índice arquivo: ${indiceArquivo}`);
-    }
     console.log('='.repeat(80));
 
     console.log('\n🌐 Iniciando navegador...');
@@ -316,23 +180,88 @@ app.post('/download-susep', async (req, res) => {
 
     console.log('\n⏳ Aguardando resultado...');
     await Promise.race([
-      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {}),
-      page.waitForTimeout(8000)
+      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 25000 }).catch(() => {}),
+      page.waitForTimeout(10000)
     ]);
+    
+    // Aguardar elementos de download carregarem
+    await page.waitForTimeout(3000);
+    
     console.log('✅ Resultado carregado');
 
-    console.log('\n📄 Buscando arquivos PDF...');
+    console.log('\n📄 Buscando arquivos PDF com detecção avançada...');
     
-    // Extrair informações dos arquivos
+    // Extrair informações dos arquivos com múltiplas estratégias
     const arquivos = await page.evaluate(() => {
-      const links = Array.from(document.querySelectorAll('a.linkDownloadRelatorio, a[onclick*="Download"]'));
+      const results = [];
       
-      return links.map((link, index) => {
+      console.log('🔍 Estratégia 1: Procurando a.linkDownloadRelatorio');
+      const links1 = document.querySelectorAll('a.linkDownloadRelatorio');
+      console.log(`Encontrados: ${links1.length}`);
+      
+      console.log('🔍 Estratégia 2: Procurando a com onclick*=Download');
+      const links2 = document.querySelectorAll('a[onclick*="Download"]');
+      console.log(`Encontrados: ${links2.length}`);
+      
+      console.log('🔍 Estratégia 3: Procurando a com onclick*=download (minúsculo)');
+      const links3 = document.querySelectorAll('a[onclick*="download"]');
+      console.log(`Encontrados: ${links3.length}`);
+      
+      console.log('🔍 Estratégia 4: Procurando a com texto "Download"');
+      const allLinks = Array.from(document.querySelectorAll('a'));
+      const links4 = allLinks.filter(a => a.textContent.toLowerCase().includes('download'));
+      console.log(`Encontrados: ${links4.length}`);
+      
+      // Combinar todos os links encontrados (sem duplicatas)
+      const allDownloadLinks = new Set([
+        ...Array.from(links1),
+        ...Array.from(links2),
+        ...Array.from(links3),
+        ...links4
+      ]);
+      
+      console.log(`Total de links únicos: ${allDownloadLinks.size}`);
+      
+      allDownloadLinks.forEach((link, index) => {
         const onclick = link.getAttribute('onclick') || '';
-        const match = onclick.match(/location\.href='([^']+)'/);
-        const path = match ? match[1] : '';
+        const href = link.href || '';
         
-        // Extrair nome do arquivo
+        console.log(`\nAnalisando link ${index + 1}:`);
+        console.log(`  Texto: ${link.textContent.trim()}`);
+        console.log(`  OnClick: ${onclick}`);
+        console.log(`  Href: ${href}`);
+        
+        // Tentar extrair o path do onclick
+        let path = '';
+        
+        // Padrão 1: location.href='/path'
+        let match = onclick.match(/location\.href\s*=\s*['"]([^'"]+)['"]/);
+        if (match) {
+          path = match[1];
+          console.log(`  ✓ Path encontrado (padrão 1): ${path}`);
+        }
+        
+        // Padrão 2: window.location='/path'
+        if (!path) {
+          match = onclick.match(/window\.location\s*=\s*['"]([^'"]+)['"]/);
+          if (match) {
+            path = match[1];
+            console.log(`  ✓ Path encontrado (padrão 2): ${path}`);
+          }
+        }
+        
+        // Padrão 3: href direto se não for javascript:
+        if (!path && href && !href.includes('javascript:')) {
+          path = href.replace('https://www2.susep.gov.br', '');
+          console.log(`  ✓ Path do href: ${path}`);
+        }
+        
+        if (!path) {
+          console.log(`  ✗ Nenhum path encontrado`);
+          return;
+        }
+        
+        // Extrair nome do arquivo da tabela
         let nomeArquivo = 'documento.pdf';
         const tr = link.closest('tr');
         if (tr) {
@@ -342,30 +271,66 @@ app.post('/download-susep', async (req, res) => {
             const pdfMatch = texto.match(/([^\n]+\.pdf)/i);
             if (pdfMatch) {
               nomeArquivo = pdfMatch[1].trim();
+              console.log(`  ✓ Nome do arquivo: ${nomeArquivo}`);
             }
           }
         }
         
-        return {
-          index: index + 1,
+        const url = path.startsWith('http') ? path : `https://www2.susep.gov.br${path}`;
+        
+        results.push({
+          index: results.length + 1,
           nome: nomeArquivo,
           path: path,
-          url: path ? `https://www2.susep.gov.br${path}` : null
+          url: url
+        });
+        
+        console.log(`  ✓ Arquivo adicionado: ${nomeArquivo}`);
+      });
+      
+      return results;
+    });
+
+    console.log(`\n📊 RESULTADO: ${arquivos.length} arquivos encontrados`);
+    
+    if (arquivos.length > 0) {
+      console.log('\n📎 Arquivos disponíveis:');
+      arquivos.forEach(arq => {
+        console.log(`  [${arq.index}] ${arq.nome}`);
+        console.log(`      ${arq.url}`);
+      });
+    } else {
+      // Se não encontrou nada, fazer debug completo
+      console.log('\n❌ Nenhum arquivo encontrado. Executando debug...');
+      
+      const debugInfo = await page.evaluate(() => {
+        return {
+          url: window.location.href,
+          allLinks: Array.from(document.querySelectorAll('a')).map(a => ({
+            text: a.textContent.trim().substring(0, 50),
+            href: a.href,
+            onclick: a.getAttribute('onclick')?.substring(0, 100),
+            class: a.className
+          })),
+          html: document.body.innerHTML.substring(0, 2000)
         };
-      }).filter(a => a.url);
-    });
-
-    console.log(`✅ Encontrados ${arquivos.length} arquivos:`);
-    arquivos.forEach(arq => {
-      console.log(`  [${arq.index}] ${arq.nome}`);
-    });
-
-    if (arquivos.length === 0) {
+      });
+      
+      console.log('\n📋 URL atual:', debugInfo.url);
+      console.log('\n📋 Todos os links:');
+      debugInfo.allLinks.forEach((link, i) => {
+        console.log(`[${i+1}] "${link.text}" -> ${link.href}`);
+        if (link.onclick) console.log(`    onClick: ${link.onclick}`);
+      });
+      
+      console.log('\n📄 HTML (primeiros 2000 chars):');
+      console.log(debugInfo.html);
+      
       throw new Error('Nenhum arquivo PDF encontrado para este processo');
     }
 
     // Selecionar qual arquivo baixar
-    let arquivoParaBaixar = arquivos[0]; // Padrão: primeiro arquivo
+    let arquivoParaBaixar = arquivos[0];
     
     if (indiceArquivo && indiceArquivo > 0 && indiceArquivo <= arquivos.length) {
       arquivoParaBaixar = arquivos[indiceArquivo - 1];
@@ -456,15 +421,12 @@ process.on('SIGTERM', () => {
 
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('\n' + '='.repeat(80));
-  console.log('🚀 API SUSEP v8.0 FINAL - FUNCIONANDO!');
+  console.log('🚀 API SUSEP v9.0 - ENHANCED DETECTION');
   console.log('='.repeat(80));
   console.log(`📍 Porta: ${PORT}`);
-  console.log(`📡 Endpoints:`);
-  console.log(`   POST /download-susep - Baixar PDF`);
-  console.log(`   POST /listar-arquivos - Listar arquivos disponíveis`);
-  console.log(`   GET  /health - Status`);
+  console.log(`📡 Endpoint: POST /download-susep`);
   console.log('='.repeat(80));
-  console.log('✅ Online e pronto!\n');
+  console.log('✅ Online!\n');
 });
 
 server.timeout = CONFIG.timeout;
