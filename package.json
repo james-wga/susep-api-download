@@ -1,17 +1,15 @@
 {
   "name": "susep-api-download",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "API para download automatizado de PDFs da SUSEP",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
-  "keywords": ["susep", "pdf", "download", "api", "puppeteer"],
-  "author": "Seu Nome",
-  "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
-    "puppeteer": "^21.6.1"
+    "puppeteer": "^21.6.1",
+    "axios": "^1.6.0"
   },
   "engines": {
     "node": "18.x"
