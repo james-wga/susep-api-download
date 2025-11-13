@@ -150,7 +150,7 @@ app.post('/analisar-processo', async (req, res) => {
     console.log('✅ Navegador iniciado');
 
     console.log('\n[2/5] 🔍 Acessando SUSEP...');
-    await page.goto('https://www2.susep.gov.br/safe/menumercado/REP2/Produto.aspx', {
+    await page.goto('https://www2.susep.gov.br/safe/menumercado/REP2/Produto.aspx/Consultar', {
       waitUntil: 'networkidle2',
       timeout: 90000
     });
