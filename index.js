@@ -263,56 +263,83 @@ app.post('/download-susep', async (req, res) => {
     
     console.log(`🔗 URL de download: ${downloadUrl}`);
 
-    // Baixar o PDF clicando no link (mantém sessão SUSEP)
-    console.log('\n⬇️ Baixando PDF via clique no link...');
+    // Baixar o PDF via CDP (Chrome DevTools Protocol)
+    console.log('\n⬇️ Configurando download via CDP...');
     
-    // Encontrar e clicar no link específico na página
-    const clickSuccess = await page.evaluate((targetIndex) => {
+    const client = await page.target().createCDPSession();
+    
+    // Habilitar eventos de download
+    await client.send('Browser.setDownloadBehavior', {
+      behavior: 'allow',
+      downloadPath: '/tmp'
+    });
+    
+    // Configurar interceptação de respostas
+    await client.send('Network.enable');
+    
+    console.log('✅ CDP configurado');
+    
+    // Criar promise para capturar o PDF
+    const pdfPromise = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Timeout aguardando PDF'));
+      }, 60000); // 60 segundos
+      
+      client.on('Network.responseReceived', async ({ response }) => {
+        const url = response.url;
+        const mimeType = response.mimeType || '';
+        
+        console.log(`📡 Response: ${url.substring(url.length - 50)}`);
+        console.log(`   MimeType: ${mimeType}`);
+        
+        if (mimeType.includes('pdf') || url.includes('DownloadConsultaPublica')) {
+          console.log('✓ PDF detectado!');
+          
+          try {
+            // Pegar o corpo da resposta
+            const requestId = response.requestId;
+            const result = await client.send('Network.getResponseBody', { requestId });
+            
+            clearTimeout(timeout);
+            
+            if (result.base64Encoded) {
+              const buffer = Buffer.from(result.body, 'base64');
+              resolve({ buffer, mimeType, url });
+            } else {
+              const buffer = Buffer.from(result.body);
+              resolve({ buffer, mimeType, url });
+            }
+          } catch (e) {
+            console.log(`⚠️ Erro ao capturar body: ${e.message}`);
+          }
+        }
+      });
+    });
+    
+    // Clicar no link
+    console.log(`\n🖱️ Clicando no link [${arquivoParaBaixar.index}]...`);
+    
+    await page.evaluate((targetIndex) => {
       const links = document.querySelectorAll('a.linkDownloadRelatorio, a[onclick*="Download"]');
       
       if (links[targetIndex - 1]) {
         const link = links[targetIndex - 1];
         const onclick = link.getAttribute('onclick');
-        
-        console.log(`Clicando no link ${targetIndex}: ${onclick}`);
-        
-        // Executar o onclick
-        if (onclick) {
-          eval(onclick);
-          return true;
-        }
+        console.log(`Executando: ${onclick}`);
+        eval(onclick);
       }
-      return false;
     }, arquivoParaBaixar.index);
-
-    if (!clickSuccess) {
-      throw new Error('Não foi possível clicar no link de download');
-    }
-
-    console.log('✅ Clique executado, aguardando navegação...');
     
-    // Aguardar a navegação para o PDF
-    const pdfResponse = await page.waitForNavigation({
-      waitUntil: 'networkidle0',
-      timeout: CONFIG.navigationTimeout
-    });
-
-    if (!pdfResponse) {
-      throw new Error('Nenhuma resposta após clicar no link');
-    }
-
-    const status = pdfResponse.status();
-    const contentType = pdfResponse.headers()['content-type'] || 'unknown';
+    console.log('⏳ Aguardando PDF...');
     
-    console.log(`📡 Status HTTP: ${status}`);
-    console.log(`📋 Content-Type: ${contentType}`);
-    console.log(`🌐 URL final: ${page.url()}`);
-
-    if (status !== 200) {
-      throw new Error(`Erro HTTP ${status} ao baixar o PDF`);
-    }
-
-    const pdfBuffer = await pdfResponse.buffer();
+    // Aguardar o PDF
+    const pdfData = await pdfPromise;
+    
+    console.log(`✅ PDF capturado!`);
+    console.log(`📦 Tamanho: ${pdfData.buffer.length} bytes`);
+    console.log(`📋 MimeType: ${pdfData.mimeType}`);
+    
+    const pdfBuffer = pdfData.buffer;
     console.log(`📦 Buffer recebido: ${pdfBuffer.length} bytes`);
 
     // Validar se é PDF
