@@ -126,10 +126,42 @@ app.post('/download-susep', async (req, res) => {
     ]);
     await page.waitForTimeout(3000);
 
-    console.log('Buscando arquivos...');
+    console.log('Buscando arquivos e informacoes...');
 
-    const arquivos = await page.evaluate(() => {
-      const results = [];
+    const dadosPagina = await page.evaluate(() => {
+      const resultado = {
+        seguradora: '',
+        arquivos: []
+      };
+
+      // Extrair nome da seguradora
+      // Procurar por label/span que contenha "Seguradora" ou "Sociedade"
+      const labels = Array.from(document.querySelectorAll('label, span, td, th'));
+      for (const label of labels) {
+        const texto = label.textContent.trim();
+        if (texto.match(/seguradora|sociedade/i)) {
+          // Pegar o próximo elemento ou valor após dois pontos
+          let valorSeguradora = '';
+          
+          // Tentar pegar valor depois de ":"
+          if (texto.includes(':')) {
+            valorSeguradora = texto.split(':')[1].trim();
+          } else {
+            // Tentar pegar próximo sibling ou célula
+            const next = label.nextElementSibling || label.nextSibling;
+            if (next) {
+              valorSeguradora = next.textContent.trim();
+            }
+          }
+          
+          if (valorSeguradora && valorSeguradora.length > 3) {
+            resultado.seguradora = valorSeguradora;
+            break;
+          }
+        }
+      }
+
+      // Extrair arquivos com suas datas
       const links = [
         ...Array.from(document.querySelectorAll('a.linkDownloadRelatorio')),
         ...Array.from(document.querySelectorAll('a[onclick*="Download"]'))
@@ -149,34 +181,57 @@ app.post('/download-susep', async (req, res) => {
         if (!idMatch) return;
 
         let nomeArquivo = 'documento.pdf';
+        let dataFim = '';
+        
         const tr = link.closest('tr');
         if (tr) {
-          const firstCell = tr.querySelector('td');
-          if (firstCell) {
-            const texto = firstCell.textContent.trim();
+          const cells = tr.querySelectorAll('td');
+          
+          // Primeira célula: nome do arquivo
+          if (cells[0]) {
+            const texto = cells[0].textContent.trim();
             const pdfMatch = texto.match(/([^\n]+\.pdf)/i);
             if (pdfMatch) {
               nomeArquivo = pdfMatch[1].trim();
             }
           }
+          
+          // Terceira célula: data de fim de comercialização
+          // (considerando: Arquivo | Data Início | Data Fim)
+          if (cells[2]) {
+            dataFim = cells[2].textContent.trim();
+          }
         }
 
-        results.push({
-          index: results.length + 1,
+        resultado.arquivos.push({
+          index: resultado.arquivos.length + 1,
           nome: nomeArquivo,
           downloadId: idMatch[1],
-          path: path
+          path: path,
+          dataFim: dataFim
         });
       });
 
-      return results;
+      return resultado;
     });
+
+    const arquivos = dadosPagina.arquivos;
+    const seguradora = dadosPagina.seguradora;
+
+    console.log('Seguradora:', seguradora || 'Nao identificada');
+    console.log('Arquivos encontrados:', arquivos.length);
 
     console.log('Arquivos encontrados:', arquivos.length);
 
     if (arquivos.length === 0) {
       throw new Error('Nenhum arquivo encontrado');
     }
+
+    // Mostrar lista de arquivos com suas informações
+    arquivos.forEach((arq) => {
+      const status = arq.dataFim ? arq.dataFim : 'VIGENTE';
+      console.log('  [' + arq.index + '] ' + arq.nome + ' - ' + status);
+    });
 
     let arquivoIndex = 0;
     if (indiceArquivo && indiceArquivo > 0 && indiceArquivo <= arquivos.length) {
@@ -185,6 +240,7 @@ app.post('/download-susep', async (req, res) => {
 
     const arquivoParaBaixar = arquivos[arquivoIndex];
     console.log('Selecionado:', arquivoParaBaixar.nome);
+    console.log('Data Fim:', arquivoParaBaixar.dataFim || 'VIGENTE');
 
     const downloadUrl = 'https://www2.susep.gov.br' + arquivoParaBaixar.path;
     console.log('URL:', downloadUrl);
@@ -228,14 +284,46 @@ app.post('/download-susep', async (req, res) => {
 
     await browser.close();
 
-    const filename = arquivoParaBaixar.nome.replace(/[^\w\.-]/g, '_');
+    // Construir nome do arquivo: [PROCESSO]_[SEGURADORA]_[NOME_ARQUIVO]_[STATUS].pdf
+    let filename = '';
+    
+    // 1. Adicionar número do processo
+    const processoLimpo = numeroprocesso.replace(/[^\w]/g, '_');
+    filename += processoLimpo + '_';
+    
+    // 2. Adicionar seguradora se encontrada
+    if (seguradora) {
+      const seguradoraLimpa = seguradora.replace(/[^\w\s-]/g, '').replace(/\s+/g, '_');
+      filename += seguradoraLimpa + '_';
+    }
+    
+    // 3. Adicionar nome original do arquivo (sem extensão)
+    const nomeBase = arquivoParaBaixar.nome.replace('.pdf', '').replace(/[^\w\s-]/g, '').replace(/\s+/g, '_');
+    filename += nomeBase + '_';
+    
+    // 4. Adicionar status (data fim ou VIGENTE)
+    if (arquivoParaBaixar.dataFim && arquivoParaBaixar.dataFim.trim().length > 0) {
+      // Tem data de fim - formatar a data
+      const dataFormatada = arquivoParaBaixar.dataFim.replace(/\//g, '-').replace(/\s+/g, '');
+      filename += dataFormatada;
+    } else {
+      // Sem data de fim - está vigente
+      filename += 'VIGENTE';
+    }
+    
+    filename += '.pdf';
+    
+    console.log('Nome do arquivo final:', filename);
 
     res.set({
       'Content-Type': 'application/pdf',
       'Content-Disposition': 'attachment; filename="' + filename + '"',
       'Content-Length': pdfBuffer.length,
       'X-Process-Time': tempoTotal + 's',
-      'X-File-Size': tamanhoKB + 'KB'
+      'X-File-Size': tamanhoKB + 'KB',
+      'X-Processo-SUSEP': numeroprocesso,
+      'X-Seguradora': seguradora || 'N/A',
+      'X-Status': arquivoParaBaixar.dataFim || 'VIGENTE'
     });
 
     res.send(pdfBuffer);
