@@ -261,7 +261,7 @@ app.post('/download-susep', async (req, res) => {
 
     // Aguardar e preencher campo
     console.log('✍️ [3/6] Preenchendo número do processo...');
-    await page.waitForSelector('#txtNumeroProcesso', { timeout: 20000 });
+    await page.waitForSelector('#txtNumeroProcesso', { timeout: 60000 });
     await page.type('#txtNumeroProcesso', numeroprocesso);
     console.log('✅ Campo preenchido');
 
