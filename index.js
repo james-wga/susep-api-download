@@ -127,7 +127,7 @@ app.post('/download-susep', async (req, res) => {
     console.log('✅ Navegador pronto');
 
     console.log('\n🔍 Acessando SUSEP...');
-    await page.goto('https://www2.susep.gov.br/safe/menumercado/REP2/Produto.aspx', {
+    await page.goto('https://www2.susep.gov.br/safe/menumercado/REP2/Produto.aspx/Consultar', {
       waitUntil: 'networkidle2',
       timeout: CONFIG.navigationTimeout
     });
