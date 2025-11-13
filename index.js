@@ -132,6 +132,7 @@ app.get('/health', (req, res) => {
 // Endpoint de download
 app.post('/download-susep', async (req, res) => {
   let browser = null;
+  const startTime = Date.now();
   
   try {
     const { numeroprocesso } = req.body;
@@ -143,8 +144,13 @@ app.post('/download-susep', async (req, res) => {
       });
     }
 
-    console.log(`\n📥 Processando: ${numeroprocesso}`);
+    console.log(`\n${'='.repeat(60)}`);
+    console.log(`📥 NOVA REQUISIÇÃO - ${new Date().toISOString()}`);
+    console.log(`📋 Processo: ${numeroprocesso}`);
+    console.log('='.repeat(60));
 
+    // Iniciar browser
+    console.log('🌐 [1/6] Iniciando Chrome...');
     browser = await puppeteer.launch({
       headless: 'new',
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
@@ -153,120 +159,234 @@ app.post('/download-susep', async (req, res) => {
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
+        '--disable-blink-features=AutomationControlled',
         '--ignore-certificate-errors',
-        '--disable-web-security'
+        '--ignore-certificate-errors-spki-list',
+        '--disable-web-security',
+        '--disable-features=IsolateOrigins,site-per-process'
       ]
     });
 
     const page = await browser.newPage();
     await page.setViewport({ width: 1920, height: 1080 });
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    
+    console.log('✅ Chrome iniciado');
 
-    console.log('🔍 Acessando SUSEP...');
+    // Acessar SUSEP
+    console.log('🔍 [2/6] Acessando SUSEP...');
     await page.goto('https://www2.susep.gov.br/safe/menumercado/REP2/Produto.aspx', {
-      waitUntil: 'networkidle2',
-      timeout: 60000
+      waitUntil: 'networkidle0',
+      timeout: 90000
     });
+    console.log('✅ Página SUSEP carregada');
 
-    await page.waitForTimeout(3000);
-
-    // Preencher campo
-    console.log('✍️ Preenchendo...');
-    await page.waitForSelector('#txtNumeroProcesso', { timeout: 20000 });
-    await page.type('#txtNumeroProcesso', numeroprocesso);
-
-    // Clicar
-    console.log('🔎 Buscando...');
-    await page.click('#btnConsultar');
+    // Aguardar página carregar
+    console.log('⏳ [3/6] Aguardando elementos...');
     await page.waitForTimeout(5000);
 
-    // CAPTURAR TUDO DA PÁGINA
-    console.log('📸 Capturando informações da página...');
+    // Procurar campo de busca
+    console.log('✍️ [4/6] Preenchendo formulário...');
+    const selectors = [
+      '#txtNumeroProcesso',
+      'input[name*="Processo"]',
+      'input[type="text"]'
+    ];
+
+    let inputFound = false;
+    for (const selector of selectors) {
+      try {
+        await page.waitForSelector(selector, { timeout: 10000 });
+        console.log(`✅ Campo encontrado: ${selector}`);
+        await page.type(selector, numeroprocesso);
+        inputFound = true;
+        break;
+      } catch (e) {
+        console.log(`⚠️ Seletor ${selector} não encontrado`);
+      }
+    }
+
+    if (!inputFound) {
+      await browser.close();
+      return res.status(500).json({
+        error: 'Campo de busca não encontrado',
+        dica: 'A SUSEP pode ter mudado a estrutura da página'
+      });
+    }
+
+    // Clicar em buscar
+    console.log('🔎 Clicando em Buscar...');
+    const buttonSelectors = [
+      '#btnConsultar',
+      'input[type="submit"]',
+      'button[type="submit"]'
+    ];
+
+    let buttonClicked = false;
+    for (const selector of buttonSelectors) {
+      try {
+        await page.click(selector);
+        buttonClicked = true;
+        console.log(`✅ Botão clicado: ${selector}`);
+        break;
+      } catch (e) {
+        console.log(`⚠️ Botão ${selector} não encontrado`);
+      }
+    }
+
+    if (!buttonClicked) {
+      await browser.close();
+      return res.status(500).json({
+        error: 'Botão de busca não encontrado'
+      });
+    }
+
+    // Aguardar resultado
+    console.log('⏳ [5/6] Aguardando resultado...');
+    await page.waitForTimeout(5000);
+
+    // Verificar mensagens de erro
+    const errorMsg = await page.evaluate(() => {
+      const error = document.querySelector('.error, .alert, .mensagem-erro');
+      return error ? error.textContent : null;
+    });
+
+    if (errorMsg) {
+      console.log('⚠️ Mensagem da SUSEP:', errorMsg);
+    }
+
+    // Listar links (debug)
+    const allLinks = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll('a')).map(a => ({
+        text: a.textContent.trim().substring(0, 50),
+        href: a.href
+      }));
+    });
+    console.log('🔗 Total de links encontrados:', allLinks.length);
+    console.log('🔗 Primeiros links:', JSON.stringify(allLinks.slice(0, 5), null, 2));
+
+    // Procurar PDF de múltiplas formas
+    console.log('📄 [6/6] Procurando link do PDF...');
     
-    const pageInfo = await page.evaluate(() => {
-      const info = {
-        title: document.title,
-        url: window.location.href,
-        allText: document.body.innerText.substring(0, 2000),
-        allLinks: [],
-        tables: [],
-        buttons: [],
-        scripts: []
-      };
-
-      // Todos os links
-      document.querySelectorAll('a').forEach((a, i) => {
-        info.allLinks.push({
-          index: i,
-          text: a.innerText.trim(),
-          href: a.href,
-          onclick: a.getAttribute('onclick'),
-          id: a.id,
-          class: a.className
-        });
-      });
-
-      // Conteúdo de tabelas
-      document.querySelectorAll('table').forEach((table, i) => {
-        const rows = [];
-        table.querySelectorAll('tr').forEach(tr => {
-          const cells = [];
-          tr.querySelectorAll('td, th').forEach(cell => {
-            cells.push(cell.innerText.trim());
-          });
-          if (cells.length > 0) rows.push(cells);
-        });
-        info.tables.push({ index: i, rows: rows.slice(0, 10) });
-      });
-
-      // Botões
-      document.querySelectorAll('button, input[type="button"]').forEach((btn, i) => {
-        info.buttons.push({
-          index: i,
-          text: btn.innerText || btn.value,
-          onclick: btn.getAttribute('onclick')
-        });
-      });
-
-      return info;
+    const pdfLink = await page.evaluate(() => {
+      // Método 1: Link direto com .pdf
+      let link = document.querySelector('a[href*=".pdf"]');
+      if (link) {
+        console.log('Método 1: Link direto encontrado');
+        return link.href;
+      }
+      
+      // Método 2: Link com texto "Download"
+      const allLinks = Array.from(document.querySelectorAll('a'));
+      for (const a of allLinks) {
+        const text = a.textContent.toLowerCase();
+        if (text.includes('download') || text.includes('.pdf')) {
+          console.log('Método 2: Link por texto encontrado');
+          return a.href;
+        }
+      }
+      
+      // Método 3: Dentro de tabela
+      const tableLinks = document.querySelectorAll('table a[href]');
+      for (const a of tableLinks) {
+        if (a.href.includes('.pdf') || a.href.includes('Anexos')) {
+          console.log('Método 3: Link em tabela encontrado');
+          return a.href;
+        }
+      }
+      
+      // Método 4: Procurar por onclick
+      for (const a of allLinks) {
+        const onclick = a.getAttribute('onclick') || '';
+        if (onclick.includes('.pdf')) {
+          const match = onclick.match(/'([^']+\.pdf[^']*)'/);
+          if (match) {
+            console.log('Método 4: Link via onclick encontrado');
+            return new URL(match[1], window.location.href).href;
+          }
+        }
+      }
+      
+      return null;
     });
 
-    console.log('\n=== INFORMAÇÕES DA PÁGINA ===');
-    console.log('Title:', pageInfo.title);
-    console.log('URL:', pageInfo.url);
-    console.log('\n--- TEXTO DA PÁGINA (primeiros 500 chars) ---');
-    console.log(pageInfo.allText.substring(0, 500));
-    console.log('\n--- TODOS OS LINKS ---');
-    pageInfo.allLinks.forEach(link => {
-      console.log(`\nLink ${link.index}:`);
-      console.log(`  Texto: ${link.text}`);
-      console.log(`  Href: ${link.href}`);
-      if (link.onclick) console.log(`  Onclick: ${link.onclick}`);
+    if (!pdfLink) {
+      const pageContent = await page.content();
+      console.log('❌ PDF não encontrado');
+      console.log('📄 HTML (primeiros 500 chars):');
+      console.log(pageContent.substring(0, 500));
+      
+      await browser.close();
+      
+      return res.status(404).json({
+        error: 'Link de download não encontrado',
+        dica: 'Verifique se o processo existe e tem PDF disponível',
+        numeroprocesso: numeroprocesso,
+        linksEncontrados: allLinks.length
+      });
+    }
+
+    console.log(`✅ PDF encontrado: ${pdfLink.substring(0, 80)}...`);
+
+    // Baixar PDF
+    console.log('⬇️ Baixando PDF...');
+    const pdfResponse = await page.goto(pdfLink, {
+      waitUntil: 'networkidle0',
+      timeout: 90000
     });
-    console.log('\n--- TABELAS ---');
-    console.log(JSON.stringify(pageInfo.tables, null, 2));
-    console.log('\n--- BOTÕES ---');
-    console.log(JSON.stringify(pageInfo.buttons, null, 2));
-    console.log('\n=== FIM DAS INFORMAÇÕES ===\n');
+
+    const pdfBuffer = await pdfResponse.buffer();
+
+    if (!pdfBuffer.toString('utf8', 0, 5).includes('%PDF')) {
+      await browser.close();
+      return res.status(500).json({
+        error: 'Arquivo baixado não é um PDF válido'
+      });
+    }
+
+    const tamanhoKB = (pdfBuffer.length / 1024).toFixed(2);
+    const tempoTotal = ((Date.now() - startTime) / 1000).toFixed(2);
+    
+    console.log(`✅ PDF baixado com sucesso!`);
+    console.log(`📊 Tamanho: ${tamanhoKB} KB`);
+    console.log(`⏱️ Tempo total: ${tempoTotal}s`);
+    console.log('='.repeat(60) + '\n');
 
     await browser.close();
 
-    // Retornar todas as informações para análise
-    return res.json({
-      success: false,
-      message: 'Modo debug - informações capturadas',
-      numeroprocesso: numeroprocesso,
-      pageInfo: pageInfo
+    const filename = `${numeroprocesso.replace(/[\/\.]/g, '_')}.pdf`;
+
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Content-Length': pdfBuffer.length,
+      'X-Process-Time': `${tempoTotal}s`,
+      'X-File-Size': `${tamanhoKB}KB`
     });
 
+    res.send(pdfBuffer);
+
   } catch (error) {
-    console.error(`❌ Erro: ${error.message}`);
+    console.error(`\n❌ ERRO: ${error.message}`);
+    console.error(`Stack: ${error.stack}\n`);
+    
     if (browser) {
       try { await browser.close(); } catch (e) {}
     }
-    res.status(500).json({ error: error.message });
+
+    res.status(500).json({
+      error: error.message,
+      tipo: error.name,
+      timestamp: new Date().toISOString()
+    });
   }
 });
+
+// Tratamento de erros
+process.on('unhandledRejection', (error) => {
+  console.error('Unhandled Rejection:', error);
+});
+
 // Iniciar servidor
 app.listen(PORT, () => {
   console.log('\n' + '='.repeat(60));
