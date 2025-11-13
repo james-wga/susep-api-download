@@ -189,24 +189,31 @@ app.post('/download-susep', async (req, res) => {
     const downloadUrl = 'https://www2.susep.gov.br' + arquivoParaBaixar.path;
     console.log('URL:', downloadUrl);
 
-    console.log('Baixando PDF...');
-    const pdfResponse = await page.goto(downloadUrl, {
-      waitUntil: 'networkidle0',
-      timeout: CONFIG.navigationTimeout
-    });
+    console.log('Baixando PDF via Fetch API...');
+    
+    // Baixar usando fetch DENTRO do contexto da página (mantém todos os cookies e headers)
+    const pdfBase64 = await page.evaluate(async (url) => {
+      const response = await fetch(url);
+      
+      if (!response.ok) {
+        throw new Error('Fetch falhou: ' + response.status);
+      }
+      
+      const blob = await response.blob();
+      const arrayBuffer = await blob.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+      
+      // Converter para base64
+      let binary = '';
+      for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      
+      return btoa(binary);
+    }, downloadUrl);
 
-    if (!pdfResponse) {
-      throw new Error('Sem resposta');
-    }
-
-    const status = pdfResponse.status();
-    console.log('Status:', status);
-
-    if (status !== 200) {
-      throw new Error('Erro HTTP ' + status);
-    }
-
-    const pdfBuffer = await pdfResponse.buffer();
+    console.log('PDF capturado via Fetch, decodificando...');
+    const pdfBuffer = Buffer.from(pdfBase64, 'base64');
     console.log('Buffer:', pdfBuffer.length, 'bytes');
 
     const pdfHeader = pdfBuffer.toString('utf8', 0, 5);
