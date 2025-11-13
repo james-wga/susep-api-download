@@ -127,8 +127,11 @@ app.post('/download-susep', async (req, res) => {
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
-        '--disable-gpu'
+        '--disable-gpu',
+        '--ignore-certificate-errors',
+        '--ignore-certificate-errors-spki-list'
       ],
+      ignoreHTTPSErrors: true,
       timeout: 120000
     });
 
