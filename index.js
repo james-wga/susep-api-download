@@ -243,14 +243,15 @@ app.post('/download-susep', async (req, res) => {
     const downloadUrl = `https://www2.susep.gov.br${arquivoParaBaixar.path}`;
     console.log(`🔗 URL: ${downloadUrl}`);
 
-    // NOVA ESTRATÉGIA: Criar nova página e navegar diretamente
-    console.log('\n⬇️ Abrindo PDF em nova aba...');
+    // ESTRATÉGIA FINAL: Copiar cookies e navegar na mesma página
+    console.log('\n⬇️ Navegando para o PDF na mesma página...');
     
-    const pdfPage = await browser.newPage();
-    await pdfPage.setViewport({ width: 1366, height: 768 });
+    // Pegar cookies antes de navegar
+    const cookies = await page.cookies();
+    console.log(`🍪 Cookies capturados: ${cookies.length}`);
     
     console.log('🌐 Navegando para o PDF...');
-    const pdfResponse = await pdfPage.goto(downloadUrl, {
+    const pdfResponse = await page.goto(downloadUrl, {
       waitUntil: 'networkidle0',
       timeout: CONFIG.navigationTimeout
     });
@@ -272,8 +273,6 @@ app.post('/download-susep', async (req, res) => {
     console.log('📦 Capturando buffer...');
     const pdfBuffer = await pdfResponse.buffer();
     console.log(`✓ Buffer capturado: ${pdfBuffer.length} bytes`);
-
-    await pdfPage.close();
 
     // Validar PDF
     const pdfHeader = pdfBuffer.toString('utf8', 0, 5);
